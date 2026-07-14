@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESHD FA 알람 리스트 관리 &amp; 리포트 툴</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  :root{
+    --blue:#2563eb; --blue-d:#1d4ed8; --bg:#f4f6f9; --card:#ffffff; --border:#e2e6ec;
+    --text:#1f2430; --muted:#6b7280; --green:#16a34a; --orange:#ea580c; --purple:#7c3aed;
+    --gray:#6b7280; --red:#dc2626;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:"Segoe UI","Malgun Gothic",-apple-system,sans-serif;
+    background:var(--bg); color:var(--text); font-size:14px;
+  }
+  header{
+    background:linear-gradient(90deg,var(--blue),var(--blue-d)); color:#fff;
+    padding:18px 24px;
+  }
+  header h1{margin:0; font-size:19px;}
+  header p{margin:4px 0 0; font-size:12.5px; opacity:.9;}
+  nav{
+    display:flex; gap:6px; background:#fff; border-bottom:1px solid var(--border);
+    padding:0 20px; overflow-x:auto;
+  }
+  nav button{
+    border:none; background:none; padding:12px 16px; font-size:14px; cursor:pointer;
+    color:var(--muted); border-bottom:3px solid transparent; white-space:nowrap; font-weight:600;
+  }
+  nav button.active{ color:var(--blue-d); border-bottom-color:var(--blue-d); }
+  main{ padding:20px; max-width:1300px; margin:0 auto; }
+  .panel{ display:none; }
+  .panel.active{ display:block; }
+  .card{
+    background:var(--card); border:1px solid var(--border); border-radius:10px;
+    padding:16px 18px; margin-bottom:16px;
+  }
+  .card h3{margin:0 0 10px; font-size:14.5px;}
+  .guide{ background:#eef4ff; border-color:#c9dcff; font-size:13px; line-height:1.7; color:#1e3a8a; }
+  .guide b{color:#1d4ed8;}
+  .toolbar{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+  .toolbar input[type=file]{ font-size:13px; }
+  button.btn{
+    border:1px solid var(--blue-d); background:var(--blue); color:#fff; border-radius:6px;
+    padding:8px 14px; font-size:13px; cursor:pointer; font-weight:600;
+  }
+  button.btn.secondary{ background:#fff; color:var(--blue-d); }
+  button.btn.gray{ background:#fff; color:var(--muted); border-color:var(--border); }
+  button.btn:hover{ opacity:.9; }
+  .fileinfo{ font-size:12.5px; color:var(--muted); }
+  .fileinfo b{color:var(--text);}
+  .tablewrap{ overflow:auto; max-height:560px; border:1px solid var(--border); border-radius:8px; }
+  table{ border-collapse:collapse; width:100%; font-size:12.5px; }
+  table th, table td{ border-bottom:1px solid var(--border); border-right:1px solid #f0f2f5; padding:6px 8px; text-align:left; vertical-align:top; }
+  table thead th{ background:#f8f9fb; position:sticky; top:0; z-index:1; font-weight:700; color:#374151; }
+  table td select, table td textarea, table td input{
+    width:100%; border:1px solid #dfe3ea; border-radius:4px; font-size:12.5px; padding:4px 5px;
+    font-family:inherit; background:#fff;
+  }
+  table td textarea{ min-height:40px; resize:vertical; }
+  table tbody tr:hover{ background:#fafbfd; }
+  .num{ text-align:right; white-space:nowrap; font-weight:600; }
+  .muted{ color:var(--muted); }
+  .badge{ display:inline-block; padding:2px 8px; border-radius:10px; font-size:11.5px; font-weight:700; color:#fff; }
+  .kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:16px; }
+  .kpi{ background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .kpi .label{ font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .kpi .value{ font-size:24px; font-weight:800; }
+  .kpi .delta{ font-size:12px; margin-top:4px; font-weight:600; }
+  .delta.up{ color:var(--red); } .delta.down{ color:var(--blue-d); } .delta.flat{ color:var(--muted); }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:900px){ .grid2{ grid-template-columns:1fr; } }
+  .chartbox{ position:relative; height:260px; }
+  select.vendorfilter{ padding:7px 10px; border-radius:6px; border:1px solid var(--border); font-size:13px; font-weight:600; }
+  .focusItem{ border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px; background:#fffefb; }
+  .focusItem .top{ display:flex; justify-content:space-between; font-size:13px; font-weight:700; }
+  .focusItem .desc{ font-size:12px; color:var(--muted); margin-top:4px; white-space:pre-wrap; }
+  .rank{ display:inline-block; width:20px; height:20px; background:var(--blue); color:#fff; border-radius:50%; text-align:center; font-size:11px; line-height:20px; margin-right:6px; }
+  .empty{ text-align:center; color:var(--muted); padding:40px 10px; font-size:13px; }
+  footer{ text-align:center; color:var(--muted); font-size:11.5px; padding:20px; }
+  .tag{ font-size:11px; background:#eef2ff; color:#4338ca; padding:2px 6px; border-radius:4px; font-weight:700; margin-right:6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ESHD FA 알람 리스트 관리 &amp; 리포트 툴</h1>
+  <p>업체별 알람 리스트 업로드/편집/다운로드 · 주간 알람 현황 대시보드 (서버 없이 이 파일 하나로 동작 · 데이터는 파일로만 전달됩니다)</p>
+</header>
+
+<nav id="tabnav"></nav>
+
+<main>
+  <div id="panels"></div>
+</main>
+
+<footer>모든 처리는 브라우저 안에서만 이루어지며 서버로 전송되지 않습니다. 업체 간 파일 전달은 이메일/공유폴더를 이용하세요.</footer>
+
+<script>
+/* ===================== 기본 설정 ===================== */
+const VENDORS = ['AVACO','PRI','EQCELL','CNS'];
+const VENDOR_COLOR = {AVACO:'#2563eb', PRI:'#16a34a', EQCELL:'#ea580c', CNS:'#7c3aed'};
+const STATUS_COLOR = {
+  'Unavoidable':'#6b7280', 'Operational':'#0891b2', 'On-going':'#ea580c', 'On-Going':'#ea580c',
+  'Monitoring':'#7c3aed', 'Completed':'#16a34a'
+};
+const STATUS_OPTIONS = ['','Unavoidable','Operational','On-going','Monitoring','Completed'];
+const CAUSE_OPTIONS = ['','Equipment','Operator','Material','IT','Process Equipment','Utility','Environment','Unknown'];
+const FIELD_COL = { status:6, cause:8, monitoringUnit:9, symptom:10, action:11, observedIssue:12, actionEn:13 };
+const HISTORY_KEY = 'alarmTool_history_v1';
+
+const state = {}; // vendor -> parsed data or null
+VENDORS.forEach(v => state[v] = null);
+const chartInstances = {};
+
+/* ===================== 유틸 ===================== */
+function cellAt(ws, r, c){ return ws[XLSX.utils.encode_cell({r,c})]; }
+function decodeRef(ws){ return XLSX.utils.decode_range(ws['!ref']); }
+function findCell(ws, matchFn){
+  const range = decodeRef(ws);
+  for(let r=range.s.r; r<=range.e.r; r++){
+    for(let c=range.s.c; c<=range.e.c; c++){
+      const cell = cellAt(ws,r,c);
+      if(cell && cell.v!==undefined && matchFn(cell.v)) return {r,c,v:cell.v};
+    }
+  }
+  return null;
+}
+function toDate(v){ return v instanceof Date ? v : (typeof v === 'string' ? new Date(v) : null); }
+function fmtDate(v){
+  const d = toDate(v);
+  if(!d || isNaN(d.getTime())) return '-';
+  return `${d.getMonth()+1}/${d.getDate()}`;
+}
+function fmtDateFull(v){
+  const d = toDate(v);
+  if(!d || isNaN(d.getTime())) return '-';
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function todayStr(){
+  const d = new Date();
+  return `${String(d.getFullYear()).slice(2)}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+}
+function esc(s){
+  if(s===undefined || s===null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function num(v){ return (typeof v === 'number') ? v.toLocaleString('ko-KR') : (v ?? '-'); }
+
+/* ===================== Summary 시트 파싱 ===================== */
+function parseCauseTable(ws, titleSubstr){
+  const title = findCell(ws, v=> typeof v==='string' && v.includes(titleSubstr));
+  if(!title) return null;
+  const headerRow = title.r+1, dataStart = headerRow+1;
+  const causeCol = title.c, countCol = title.c+1;
+  const rows=[]; let total=0, r=dataStart;
+  while(true){
+    const label = cellAt(ws,r,causeCol)?.v;
+    if(label===undefined || label===null) break;
+    const count = cellAt(ws,r,countCol)?.v ?? 0;
+    if(label === 'Total'){ total = count; break; }
+    rows.push({cause:label, count: (typeof count==='number'?count:0)});
+    r++;
+    if(r > headerRow+30) break;
+  }
+  return {rows, total};
+}
+function parseTop5Table(ws, titleSubstr){
+  const title = findCell(ws, v=> typeof v==='string' && v.includes(titleSubstr));
+  if(!title) return [];
+  const headerRow = title.r+1, dataStart = headerRow+1, c0 = title.c;
+  const rows=[];
+  for(let r=dataStart; r<dataStart+5; r++){
+    const machine = cellAt(ws,r,c0)?.v;
+    if(machine===undefined || machine===null) continue;
+    rows.push({
+      machine, alarmName: cellAt(ws,r,c0+1)?.v,
+      caseNo: cellAt(ws,r,c0+2)?.v, count: cellAt(ws,r,c0+3)?.v
+    });
+  }
+  return rows;
+}
+function parseImprovementTable(ws){
+  const title = findCell(ws, v=> typeof v==='string' && v.includes('Improvement Status by Alarm Cause'));
+  if(!title) return null;
+  const headerRow = title.r+1, subHeaderRow = headerRow+1, causeCol = title.c;
+  const KNOWN = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
+  const statusCols=[];
+  for(let c=causeCol+1; c<=causeCol+8; c++){
+    const v = cellAt(ws, subHeaderRow, c)?.v;
+    if(KNOWN.includes(v)) statusCols.push({col:c, name:v}); else break;
+  }
+  const rows=[]; let r = subHeaderRow+1, totals=null;
+  while(true){
+    const label = cellAt(ws,r,causeCol)?.v;
+    if(label===undefined || label===null) break;
+    const vals={};
+    statusCols.forEach(sc => vals[sc.name] = cellAt(ws,r,sc.col)?.v ?? 0);
+    if(label === 'Total'){ totals = vals; break; }
+    rows.push({cause:label, ...vals});
+    r++;
+    if(r > subHeaderRow+30) break;
+  }
+  return { statusNames: statusCols.map(s=>s.name), rows, totals };
+}
+function parseSummarySheet(ws){
+  const dayCell = findCell(ws, v=>v==='Day');
+  const dayDate = dayCell ? cellAt(ws, dayCell.r, dayCell.c+1)?.v : null;
+  const weekCell = findCell(ws, v=>v==='Week');
+  let weekStart=null, weekEnd=null;
+  if(weekCell){
+    const dates=[];
+    for(let cc=weekCell.c+1; cc<=weekCell.c+6; cc++){
+      const cv = cellAt(ws, weekCell.r, cc)?.v;
+      if(cv instanceof Date) dates.push(cv);
+    }
+    weekStart = dates[0] ?? null; weekEnd = dates[dates.length-1] ?? null;
+  }
+  return {
+    dayDate, weekStart, weekEnd,
+    causeDay: parseCauseTable(ws, 'Alarm Occurrence by Cause (Day)'),
+    causeWeek: parseCauseTable(ws, 'Alarm Occurrence by Cause (Week)'),
+    top5Day: parseTop5Table(ws, 'Top 5 Alarm Case (Day)'),
+    top5Week: parseTop5Table(ws, 'Top 5 Alarm Case (Week)'),
+    improvement: parseImprovementTable(ws)
+  };
+}
+
+/* ===================== list 시트 파싱 ===================== */
+function parseListSheet(ws, weekStart, weekEnd){
+  const range = decodeRef(ws);
+  const merges = ws['!merges'] || [];
+  function buildFill(colIdx){
+    const fill = {};
+    merges.forEach(m=>{
+      if(m.s.c===colIdx && m.e.c===colIdx){
+        const anchor = cellAt(ws, m.s.r, colIdx)?.v;
+        for(let r=m.s.r; r<=m.e.r; r++) fill[r]=anchor;
+      }
+    });
+    return fill;
+  }
+  const fillMachine = buildFill(2), fillAlarmName = buildFill(3), fillDailyCount = buildFill(4), fillLocation = buildFill(5);
+  const dateCols = [];
+  for(let c=14; c<=range.e.c; c++){
+    const v = cellAt(ws,1,c)?.v;
+    if(v instanceof Date) dateCols.push({col:c, date:v});
+  }
+  const rows = [];
+  for(let r=2; r<=range.e.r; r++){
+    const code = cellAt(ws,r,1)?.v;
+    const status = cellAt(ws,r,6)?.v;
+    const caseNo = cellAt(ws,r,7)?.v;
+    const cause = cellAt(ws,r,8)?.v;
+    const monitoringUnit = cellAt(ws,r,9)?.v;
+    const symptom = cellAt(ws,r,10)?.v;
+    const action = cellAt(ws,r,11)?.v;
+    const observedIssue = cellAt(ws,r,12)?.v;
+    const actionEn = cellAt(ws,r,13)?.v;
+    if([code,status,caseNo,cause,monitoringUnit,symptom,action,observedIssue,actionEn].every(v=>v===undefined)) continue;
+    let weekSum=0, totalSum=0;
+    dateCols.forEach(dc=>{
+      const val = cellAt(ws,r,dc.col)?.v;
+      if(typeof val === 'number'){
+        totalSum += val;
+        if(weekStart && weekEnd && dc.date>=weekStart && dc.date<=weekEnd) weekSum += val;
+      }
+    });
+    rows.push({
+      rowNum: r,
+      code,
+      machine: cellAt(ws,r,2)?.v ?? fillMachine[r],
+      alarmName: cellAt(ws,r,3)?.v ?? fillAlarmName[r],
+      dailyCount: cellAt(ws,r,4)?.v ?? fillDailyCount[r],
+      location: cellAt(ws,r,5)?.v ?? fillLocation[r],
+      status, caseNo, cause, monitoringUnit, symptom, action, observedIssue, actionEn,
+      weekSum, totalSum
+    });
+  }
+  return { rows, dateCols };
+}
+
+/* ===================== 파일 업로드 / 파싱 ===================== */
+function parseVendorFile(vendor, wb, fileName){
+  const wsList = wb.Sheets['list'];
+  if(!wsList) throw new Error("'list' 시트를 찾을 수 없습니다. 표준 알람 리스트 양식(Summary/list/Alarm)인지 확인해주세요.");
+  const wsSummary = wb.Sheets['Summary'];
+  let summary = null;
+  if(wsSummary){
+    try{ summary = parseSummarySheet(wsSummary); }
+    catch(e){ console.warn('Summary 파싱 실패', e); }
+  }
+  const weekStart = summary?.weekStart, weekEnd = summary?.weekEnd;
+  const { rows: listRows, dateCols } = parseListSheet(wsList, weekStart, weekEnd);
+  const data = { workbook: wb, wsList, wsSummary, fileName, summary, listRows, dateCols, vendor };
+  state[vendor] = data;
+  saveHistorySnapshot(vendor, data);
+  return data;
+}
+
+/* ===================== 히스토리 (트렌드용, localStorage) ===================== */
+function loadHistory(){
+  try{ return JSON.parse(localStorage.getItem(HISTORY_KEY)) || {}; }catch(e){ return {}; }
+}
+function saveHistorySnapshot(vendor, data){
+  if(!data.summary || !data.summary.weekStart || !data.summary.weekEnd) return;
+  const hist = loadHistory();
+  if(!hist[vendor]) hist[vendor] = [];
+  const weekKey = fmtDateFull(data.summary.weekStart) + '_' + fmtDateFull(data.summary.weekEnd);
+  const snapshot = {
+    weekKey,
+    weekStart: data.summary.weekStart,
+    weekEnd: data.summary.weekEnd,
+    dayDate: data.summary.dayDate,
+    dayTotal: data.summary.causeDay?.total ?? null,
+    weekTotal: data.summary.causeWeek?.total ?? null,
+    causeWeek: data.summary.causeWeek?.rows ?? [],
+    improvementTotals: data.summary.improvement?.totals ?? null,
+    savedAt: new Date().toISOString(),
+    fileName: data.fileName
+  };
+  hist[vendor] = hist[vendor].filter(s => s.weekKey !== weekKey);
+  hist[vendor].push(snapshot);
+  hist[vendor].sort((a,b) => new Date(a.weekStart) - new Date(b.weekStart));
+  if(hist[vendor].length > 24) hist[vendor] = hist[vendor].slice(-24);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(hist));
+}
+
+/* ===================== 탭/패널 생성 ===================== */
+const TABS = [...VENDORS, 'DASH'];
+const TAB_LABEL = { AVACO:'AVACO', PRI:'PRI', EQCELL:'EQCELL', CNS:'CNS', DASH:'📊 대시보드' };
+
+function buildTabsAndPanels(){
+  const nav = document.getElementById('tabnav');
+  const panels = document.getElementById('panels');
+  TABS.forEach(tab=>{
+    const btn = document.createElement('button');
+    btn.textContent = TAB_LABEL[tab];
+    btn.dataset.tab = tab;
+    btn.addEventListener('click', ()=>switchTab(tab));
+    nav.appendChild(btn);
+  });
+  VENDORS.forEach(v=>{
+    const sec = document.createElement('section');
+    sec.className = 'panel';
+    sec.id = 'panel-'+v;
+    sec.innerHTML = vendorPanelHTML(v);
+    panels.appendChild(sec);
+  });
+  const dash = document.createElement('section');
+  dash.className = 'panel';
+  dash.id = 'panel-DASH';
+  dash.innerHTML = dashboardPanelHTML();
+  panels.appendChild(dash);
+
+  switchTab(VENDORS[0]);
+}
+
+function vendorPanelHTML(v){
+  return `
+    <div class="card guide">
+      <b>사용 순서</b> — ① 알람 리스트(.xlsx) 업로드 → ② 표에서 상태/원인/조치 내용 확인·수정 → ③ '다운로드'로 저장 → ④ 이메일/공유폴더로 전달.
+      업체가 파일을 다시 보내오면 같은 방식으로 이 화면에 업로드해서 확인한 뒤 다운로드하면 됩니다. 데이터는 서버로 전송되지 않고 이 브라우저 안에서만 처리됩니다.
+    </div>
+    <div class="card">
+      <div class="toolbar">
+        <input type="file" id="file-${v}" accept=".xlsx,.xls">
+        <button class="btn" data-action="download" data-vendor="${v}">⬇ 다운로드</button>
+        <button class="btn gray" data-action="reset" data-vendor="${v}">초기화</button>
+        <span class="fileinfo" id="fileinfo-${v}">업로드된 파일이 없습니다.</span>
+      </div>
+      <div class="tablewrap">
+        <table id="table-${v}">
+          <thead>
+            <tr>
+              <th style="width:70px;">설비</th>
+              <th style="width:170px;">Alarm Name</th>
+              <th style="width:130px;">위치</th>
+              <th style="width:40px;">Case</th>
+              <th style="width:110px;">Status</th>
+              <th style="width:120px;">Cause</th>
+              <th style="width:100px;">모니터링 유닛</th>
+              <th style="width:220px;">현상 및 원인</th>
+              <th style="width:220px;">조치 내용</th>
+              <th style="width:200px;">Observed Issue / Cause (EN)</th>
+              <th style="width:200px;">Action (EN)</th>
+              <th style="width:70px;">이번주</th>
+              <th style="width:70px;">전체</th>
+            </tr>
+          </thead>
+          <tbody><tr><td colspan="13" class="empty">파일을 업로드하면 목록이 표시됩니다.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function dashboardPanelHTML(){
+  return `
+    <div class="card" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+      <b>업체 선택</b>
+      <select class="vendorfilter" id="dashVendorFilter">
+        <option value="ALL">전체</option>
+        ${VENDORS.map(v=>`<option value="${v}">${v}</option>`).join('')}
+      </select>
+      <button class="btn secondary" id="dashRefresh">새로고침</button>
+      <span class="muted" style="font-size:12px;">업로드된 알람 리스트를 기준으로 금주 현황 · 경향 · 차주 중점 관리 대상을 자동 생성합니다.</span>
+    </div>
+    <div class="kpis" id="kpiRow"></div>
+    <div class="grid2">
+      <div class="card"><h3>■ 원인(Cause)별 알람 발생 — Day vs Week</h3><div class="chartbox"><canvas id="chartCause"></canvas></div></div>
+      <div class="card"><h3>■ 원인별 개선 진행 현황 (Improvement Status)</h3><div class="chartbox"><canvas id="chartImprove"></canvas></div></div>
+    </div>
+    <div class="grid2">
+      <div class="card"><h3>■ 주간 알람 총량 추이 (업로드 이력 기반)</h3><div class="chartbox"><canvas id="chartTrend"></canvas></div></div>
+      <div class="card" id="vendorCompareCard"><h3>■ 업체별 이번주 알람 비교</h3><div class="chartbox"><canvas id="chartVendor"></canvas></div></div>
+    </div>
+    <div class="card">
+      <h3>■ Top 알람 케이스 (이번주)</h3>
+      <div id="top5Table"></div>
+    </div>
+    <div class="card">
+      <h3>■ 차주 중점 관리 대상 알람 (자동 추천)</h3>
+      <p class="muted" style="margin-top:-4px;font-size:12.5px;">이번주 발생 빈도와 현재 조치 상태(진행중 / 모니터링 등)를 기준으로 산정했습니다. 실제 우선순위는 현장 상황에 맞게 조정하세요.</p>
+      <div id="focusList"></div>
+    </div>
+  `;
+}
+
+function switchTab(tab){
+  TABS.forEach(t=>{
+    document.getElementById('panel-'+t).classList.toggle('active', t===tab);
+  });
+  document.querySelectorAll('#tabnav button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.tab===tab);
+  });
+  if(tab==='DASH') renderDashboard();
+}
+
+/* ===================== 업체 테이블 렌더링 ===================== */
+function statusBadge(val){
+  if(!val) return '<span class="muted">-</span>';
+  const color = STATUS_COLOR[val] || '#9ca3af';
+  return `<span class="badge" style="background:${color}">${esc(val)}</span>`;
+}
+function renderVendorTable(vendor){
+  const data = state[vendor];
+  const tbody = document.querySelector(`#table-${vendor} tbody`);
+  if(!data || !data.listRows.length){
+    tbody.innerHTML = `<tr><td colspan="13" class="empty">파일을 업로드하면 목록이 표시됩니다.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = data.listRows.map(row=>{
+    return `<tr>
+      <td>${esc(row.machine)}</td>
+      <td>${esc(row.alarmName)}</td>
+      <td class="muted">${esc(row.location)}</td>
+      <td>${esc(row.caseNo)}</td>
+      <td>${selectHTML(vendor,row.rowNum,'status',STATUS_OPTIONS,row.status)}</td>
+      <td>${selectHTML(vendor,row.rowNum,'cause',CAUSE_OPTIONS,row.cause)}</td>
+      <td><input data-vendor="${vendor}" data-row="${row.rowNum}" data-field="monitoringUnit" value="${esc(row.monitoringUnit)}"></td>
+      <td><textarea data-vendor="${vendor}" data-row="${row.rowNum}" data-field="symptom">${esc(row.symptom)}</textarea></td>
+      <td><textarea data-vendor="${vendor}" data-row="${row.rowNum}" data-field="action">${esc(row.action)}</textarea></td>
+      <td><textarea data-vendor="${vendor}" data-row="${row.rowNum}" data-field="observedIssue">${esc(row.observedIssue)}</textarea></td>
+      <td><textarea data-vendor="${vendor}" data-row="${row.rowNum}" data-field="actionEn">${esc(row.actionEn)}</textarea></td>
+      <td class="num">${num(row.weekSum)}</td>
+      <td class="num">${num(row.totalSum)}</td>
+    </tr>`;
+  }).join('');
+}
+function selectHTML(vendor,row,field,options,current){
+  const opts = options.map(o=>`<option value="${esc(o)}" ${o===current?'selected':''}>${o===''?'—':esc(o)}</option>`).join('');
+  return `<select data-vendor="${vendor}" data-row="${row}" data-field="${field}">${opts}</select>`;
+}
+function renderFileInfo(vendor){
+  const data = state[vendor];
+  const el = document.getElementById(`fileinfo-${vendor}`);
+  if(!data){ el.innerHTML = '업로드된 파일이 없습니다.'; return; }
+  const s = data.summary;
+  const weekStr = s ? `${fmtDate(s.weekStart)} ~ ${fmtDate(s.weekEnd)}` : '기간 정보 없음';
+  el.innerHTML = `<b>${esc(data.fileName)}</b> · 기준 주간: ${weekStr} · 알람 항목 ${data.listRows.length}건`;
+}
+
+/* ===================== 이벤트 바인딩 ===================== */
+function handleTableEdit(e){
+  const t = e.target;
+  const vendor = t.dataset.vendor, field = t.dataset.field;
+  const rowNum = parseInt(t.dataset.row, 10);
+  if(!vendor || !field || isNaN(rowNum)) return;
+  const data = state[vendor];
+  if(!data) return;
+  const colIdx = FIELD_COL[field];
+  const addr = XLSX.utils.encode_cell({r:rowNum, c:colIdx});
+  const val = t.value;
+  if(val === ''){ delete data.wsList[addr]; }
+  else { data.wsList[addr] = { t:'s', v: val }; }
+  const rowObj = data.listRows.find(r => r.rowNum === rowNum);
+  if(rowObj) rowObj[field] = val;
+}
+
+function downloadVendor(vendor){
+  const data = state[vendor];
+  if(!data){ alert('먼저 알람 리스트 파일을 업로드하세요.'); return; }
+  const base = data.fileName.replace(/\.xlsx?$/i,'');
+  const outName = `${base}_수정_${todayStr()}.xlsx`;
+  try{
+    XLSX.writeFile(data.workbook, outName);
+  }catch(err){
+    alert('다운로드 중 오류가 발생했습니다: ' + err.message);
+    console.error(err);
+  }
+}
+function resetVendor(vendor){
+  if(!state[vendor]) return;
+  if(!confirm(`${vendor} 업로드 데이터를 초기화할까요? (다운로드하지 않은 수정 내용은 사라집니다)`)) return;
+  state[vendor] = null;
+  document.getElementById(`file-${vendor}`).value = '';
+  renderVendorTable(vendor);
+  renderFileInfo(vendor);
+}
+
+async function handleFileSelect(vendor, file){
+  if(!file) return;
+  try{
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array', cellDates:true});
+    parseVendorFile(vendor, wb, file.name);
+    renderVendorTable(vendor);
+    renderFileInfo(vendor);
+  }catch(err){
+    alert('파일을 읽는 중 문제가 발생했습니다.\n표준 알람 리스트 양식(Summary/list/Alarm 시트)인지 확인해주세요.\n\n오류: ' + err.message);
+    console.error(err);
+  }
+}
+
+/* ===================== 대시보드 ===================== */
+function activeVendors(filter){
+  const list = filter==='ALL' ? VENDORS : [filter];
+  return list.filter(v => state[v]);
+}
+function renderKPIs(vendors){
+  const box = document.getElementById('kpiRow');
+  if(!vendors.length){
+    box.innerHTML = `<div class="kpi"><div class="label">알림</div><div class="value" style="font-size:14px;">업로드된 데이터가 없습니다</div></div>`;
+    return;
+  }
+  let dayTotal=0, weekTotal=0, weekStart=null, weekEnd=null;
+  vendors.forEach(v=>{
+    const s = state[v].summary;
+    if(s?.causeDay?.total) dayTotal += s.causeDay.total;
+    if(s?.causeWeek?.total) weekTotal += s.causeWeek.total;
+    if(s?.weekStart){ weekStart = s.weekStart; weekEnd = s.weekEnd; }
+  });
+  // 전주 대비
+  const hist = loadHistory();
+  let prevWeekTotal = 0, haveHist=false;
+  vendors.forEach(v=>{
+    const h = hist[v];
+    if(!h || h.length<2) return;
+    haveHist = true;
+    prevWeekTotal += h[h.length-2].weekTotal || 0;
+  });
+  let deltaHTML = '<span class="delta flat">전주 데이터 없음</span>';
+  if(haveHist && prevWeekTotal>0){
+    const diff = weekTotal - prevWeekTotal;
+    const pct = Math.round((diff/prevWeekTotal)*100);
+    const cls = diff>0?'up':(diff<0?'down':'flat');
+    const arrow = diff>0?'▲':(diff<0?'▼':'-');
+    deltaHTML = `<span class="delta ${cls}">전주 대비 ${arrow} ${Math.abs(pct)}% (${diff>0?'+':''}${diff})</span>`;
+  }
+  box.innerHTML = `
+    <div class="kpi"><div class="label">기준 주간</div><div class="value" style="font-size:17px;">${weekStart?`${fmtDate(weekStart)} ~ ${fmtDate(weekEnd)}`:'-'}</div></div>
+    <div class="kpi"><div class="label">최근 1일 알람</div><div class="value">${dayTotal.toLocaleString('ko-KR')}건</div></div>
+    <div class="kpi"><div class="label">이번주 알람 합계</div><div class="value">${weekTotal.toLocaleString('ko-KR')}건</div>${deltaHTML}</div>
+    <div class="kpi"><div class="label">업로드된 업체</div><div class="value" style="font-size:17px;">${vendors.join(', ')}</div></div>
+  `;
+}
+function destroyChart(id){ if(chartInstances[id]){ chartInstances[id].destroy(); delete chartInstances[id]; } }
+function renderCauseChart(vendors){
+  const causes = ['Equipment','Operator','Material','IT','Process Equipment','Utility','Environment','Unknown'];
+  const dayVals = causes.map(()=>0), weekVals = causes.map(()=>0);
+  vendors.forEach(v=>{
+    const s = state[v].summary;
+    (s?.causeDay?.rows||[]).forEach(r=>{ const i=causes.indexOf(r.cause); if(i>=0) dayVals[i]+=r.count; });
+    (s?.causeWeek?.rows||[]).forEach(r=>{ const i=causes.indexOf(r.cause); if(i>=0) weekVals[i]+=r.count; });
+  });
+  destroyChart('chartCause');
+  chartInstances['chartCause'] = new Chart(document.getElementById('chartCause'), {
+    type:'bar',
+    data:{ labels:causes, datasets:[
+      {label:'최근 1일', data:dayVals, backgroundColor:'#93c5fd'},
+      {label:'이번주', data:weekVals, backgroundColor:'#2563eb'}
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } }
+  });
+}
+function renderImproveChart(vendors){
+  const causes = ['Equipment','Operator','Material','IT','Process Equipment','Utility','Environment','Unknown'];
+  const statuses = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
+  const totals = {}; statuses.forEach(s=>totals[s]=causes.map(()=>0));
+  vendors.forEach(v=>{
+    const imp = state[v].summary?.improvement;
+    if(!imp) return;
+    imp.rows.forEach(r=>{
+      const ci = causes.indexOf(r.cause);
+      if(ci<0) return;
+      statuses.forEach(s=>{ totals[s][ci] += (r[s]||0); });
+    });
+  });
+  destroyChart('chartImprove');
+  chartInstances['chartImprove'] = new Chart(document.getElementById('chartImprove'), {
+    type:'bar',
+    data:{ labels:causes, datasets: statuses.map(s=>({
+      label:s, data:totals[s], backgroundColor: STATUS_COLOR[s] || '#9ca3af'
+    })) },
+    options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{stacked:true}, y:{stacked:true, beginAtZero:true} } }
+  });
+}
+function renderTrendChart(vendors){
+  const hist = loadHistory();
+  const allKeys = new Set();
+  vendors.forEach(v => (hist[v]||[]).forEach(s=>allKeys.add(s.weekKey)));
+  const keys = Array.from(allKeys).sort();
+  destroyChart('chartTrend');
+  if(!keys.length){
+    chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
+      type:'line', data:{labels:[], datasets:[]},
+      options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true, text:'주 단위로 파일을 업로드하면 추이가 누적됩니다.'}}}
+    });
+    return;
+  }
+  const datasets = vendors.map(v=>{
+    const map = {}; (hist[v]||[]).forEach(s=>map[s.weekKey]=s.weekTotal);
+    return {
+      label:v, data: keys.map(k=>map[k] ?? null), borderColor: VENDOR_COLOR[v], backgroundColor: VENDOR_COLOR[v],
+      spanGaps:true, tension:.25
+    };
+  });
+  const labels = keys.map(k=>{
+    const [s,e] = k.split('_');
+    return `${s.slice(5).replace('-','/')}~${e.slice(5).replace('-','/')}`;
+  });
+  chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
+    type:'line', data:{labels, datasets},
+    options:{responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true}}}
+  });
+}
+function renderVendorCompareChart(filter, vendors){
+  const card = document.getElementById('vendorCompareCard');
+  if(filter!=='ALL'){ card.style.display='none'; return; }
+  card.style.display='';
+  const labels = vendors, data = vendors.map(v => state[v].summary?.causeWeek?.total ?? 0);
+  destroyChart('chartVendor');
+  chartInstances['chartVendor'] = new Chart(document.getElementById('chartVendor'), {
+    type:'bar',
+    data:{ labels, datasets:[{ label:'이번주 알람 합계', data, backgroundColor: labels.map(v=>VENDOR_COLOR[v]) }] },
+    options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } }
+  });
+}
+function renderTop5(vendors){
+  let items = [];
+  vendors.forEach(v=>{
+    (state[v].summary?.top5Week || []).forEach(r => items.push({vendor:v, ...r}));
+  });
+  items.sort((a,b) => (b.count||0)-(a.count||0));
+  items = items.slice(0,10);
+  const el = document.getElementById('top5Table');
+  if(!items.length){ el.innerHTML = '<p class="empty">데이터가 없습니다.</p>'; return; }
+  el.innerHTML = `<table><thead><tr><th>업체</th><th>설비</th><th>Alarm Name</th><th>Case</th><th>이번주 건수</th></tr></thead>
+    <tbody>${items.map(i=>`<tr><td><span class="tag">${esc(i.vendor)}</span></td><td>${esc(i.machine)}</td><td>${esc(i.alarmName)}</td><td>${esc(i.caseNo)}</td><td class="num">${num(i.count)}</td></tr>`).join('')}</tbody></table>`;
+}
+function computeFocusList(vendors){
+  const STATUS_WEIGHT = {'Unavoidable':0.25, 'Operational':0.15, 'On-going':1.0, 'On-Going':1.0, 'Monitoring':0.7, 'Completed':0.05};
+  let items = [];
+  vendors.forEach(v=>{
+    (state[v].listRows||[]).forEach(row=>{
+      if(!row.weekSum) return;
+      const w = STATUS_WEIGHT[row.status] ?? 0.6;
+      const score = row.weekSum * w;
+      if(score<=0) return;
+      items.push({ vendor:v, ...row, score });
+    });
+  });
+  items.sort((a,b)=>b.score-a.score);
+  return items.slice(0,8);
+}
+function renderFocusList(vendors){
+  const el = document.getElementById('focusList');
+  const items = computeFocusList(vendors);
+  if(!items.length){ el.innerHTML = '<p class="empty">추천할 데이터가 없습니다. 알람 리스트를 업로드해주세요.</p>'; return; }
+  el.innerHTML = items.map((it,idx)=>`
+    <div class="focusItem">
+      <div class="top">
+        <span><span class="rank">${idx+1}</span><span class="tag">${esc(it.vendor)}</span>${esc(it.machine)} · Case ${esc(it.caseNo)} · ${esc(it.cause)}</span>
+        <span>${statusBadge(it.status)} &nbsp; 이번주 ${it.weekSum}건</span>
+      </div>
+      <div class="desc">${esc((it.symptom||it.alarmName||'').toString().slice(0,180))}</div>
+    </div>
+  `).join('');
+}
+function renderDashboard(){
+  const filter = document.getElementById('dashVendorFilter')?.value || 'ALL';
+  const vendors = activeVendors(filter);
+  renderKPIs(vendors);
+  if(!vendors.length){
+    ['chartCause','chartImprove','chartTrend','chartVendor'].forEach(destroyChart);
+    document.getElementById('top5Table').innerHTML = '<p class="empty">업로드된 알람 리스트가 없습니다. 업체 탭에서 파일을 업로드해주세요.</p>';
+    document.getElementById('focusList').innerHTML = '';
+    document.getElementById('vendorCompareCard').style.display = filter==='ALL' ? '' : 'none';
+    return;
+  }
+  renderCauseChart(vendors);
+  renderImproveChart(vendors);
+  renderTrendChart(filter==='ALL' ? VENDORS : vendors);
+  renderVendorCompareChart(filter, VENDORS.filter(v=>state[v]));
+  renderTop5(vendors);
+  renderFocusList(vendors);
+}
+
+/* ===================== 초기화 ===================== */
+document.addEventListener('DOMContentLoaded', ()=>{
+  buildTabsAndPanels();
+
+  VENDORS.forEach(v=>{
+    document.getElementById(`file-${v}`).addEventListener('change', e=>{
+      handleFileSelect(v, e.target.files[0]);
+    });
+    document.querySelector(`#table-${v} tbody`).addEventListener('input', handleTableEdit);
+    document.querySelector(`#table-${v} tbody`).addEventListener('change', handleTableEdit);
+  });
+
+  document.getElementById('panels').addEventListener('click', e=>{
+    const btn = e.target.closest('button[data-action]');
+    if(!btn) return;
+    const { action, vendor } = btn.dataset;
+    if(action==='download') downloadVendor(vendor);
+    if(action==='reset') resetVendor(vendor);
+  });
+
+  document.getElementById('panel-DASH').addEventListener('change', e=>{
+    if(e.target.id==='dashVendorFilter') renderDashboard();
+  });
+  document.addEventListener('click', e=>{
+    if(e.target.id==='dashRefresh') renderDashboard();
+  });
+});
+</script>
+</body>
+</html>
