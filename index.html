@@ -390,6 +390,13 @@ function parseSummarySheet(ws){
 }
 
 /* ===================== list sheet parsing ===================== */
+function colHasData(ws, c, lastRow){
+  for(let r=2; r<=lastRow; r++){
+    const v = cellAt(ws, r, c)?.v;
+    if(typeof v === 'number' && v !== 0) return true;
+  }
+  return false;
+}
 function parseListSheet(ws, weekStart, weekEnd){
   const range = decodeRef(ws);
   const merges = ws['!merges'] || [];
@@ -407,8 +414,12 @@ function parseListSheet(ws, weekStart, weekEnd){
   const dateCols = [];
   for(let c=14; c<=range.e.c; c++){
     const d = toExcelDate(cellAt(ws,1,c));
-    if(d) dateCols.push({col:c, date:d});
+    if(d) dateCols.push({col:c, date:d, hasData: colHasData(ws, c, range.e.r)});
   }
+  // The "Day" = the latest date column that actually contains data (ignore empty
+  // pre-created future-date columns).
+  let dayColIdx = null, dayColDate = null;
+  dateCols.forEach(dc=>{ if(dc.hasData && (!dayColDate || dc.date>dayColDate)){ dayColDate = dc.date; dayColIdx = dc.col; } });
   const rows = [];
   for(let r=2; r<=range.e.r; r++){
     const code = cellAt(ws,r,1)?.v;
@@ -421,12 +432,13 @@ function parseListSheet(ws, weekStart, weekEnd){
     const observedIssue = cellAt(ws,r,12)?.v;
     const actionEn = cellAt(ws,r,13)?.v;
     if([code,status,caseNo,cause,monitoringUnit,symptom,action,observedIssue,actionEn].every(v=>v===undefined)) continue;
-    let weekSum=0, totalSum=0;
+    let weekSum=0, totalSum=0, daySum=0;
     dateCols.forEach(dc=>{
       const val = cellAt(ws,r,dc.col)?.v;
       if(typeof val === 'number'){
         totalSum += val;
         if(weekStart && weekEnd && dc.date>=weekStart && dc.date<=weekEnd) weekSum += val;
+        if(dc.col === dayColIdx) daySum += val;
       }
     });
     rows.push({
@@ -437,30 +449,80 @@ function parseListSheet(ws, weekStart, weekEnd){
       dailyCount: cellAt(ws,r,4)?.v ?? fillDailyCount[r],
       location: cellAt(ws,r,5)?.v ?? fillLocation[r],
       status, caseNo, cause, monitoringUnit, symptom, action, observedIssue, actionEn,
-      weekSum, totalSum
+      weekSum, totalSum, daySum
     });
   }
   return { rows, dateCols };
+}
+
+/* ===================== Build dashboard data directly from the list sheet =====================
+   The Summary sheet in these workbooks is built entirely from volatile array formulas
+   (SUM/COUNTIF with ca="1") that Excel saves WITHOUT cached values, so a browser — which
+   cannot recalculate Excel formulas — reads that whole sheet as empty. The list sheet, by
+   contrast, contains real plain-number daily counts. So we compute every dashboard figure
+   from the list sheet, which is always reliable. */
+function normalizeStatus(s){
+  if(!s) return null;
+  const low = String(s).trim().toLowerCase().replace(/[\s_\-]/g,'');
+  if(low==='ongoing') return 'On-Going';
+  if(low==='monitoring') return 'Monitoring';
+  if(low==='completed') return 'Completed';
+  if(low==='unavoidable') return 'Unavoidable';
+  if(low==='operational') return 'Operational';
+  return String(s).trim();
+}
+function buildSummaryFromList(listRows, dateCols, weekStart, weekEnd){
+  const KNOWN_STATUS = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
+  const causeWeekMap = {}, causeDayMap = {}, impMap = {};
+  let weekTotal = 0, dayTotal = 0;
+  listRows.forEach(row=>{
+    const cause = row.cause;
+    const wk = row.weekSum || 0, dy = row.daySum || 0;
+    if(cause){
+      causeWeekMap[cause] = (causeWeekMap[cause]||0) + wk;
+      causeDayMap[cause]  = (causeDayMap[cause]||0)  + dy;
+    }
+    weekTotal += wk; dayTotal += dy;
+    // Improvement status: count alarm cases (rows) per cause × status.
+    if(cause && row.status){
+      const st = normalizeStatus(row.status);
+      if(st){ impMap[cause] = impMap[cause] || {}; impMap[cause][st] = (impMap[cause][st]||0) + 1; }
+    }
+  });
+  const causeWeek = { rows: Object.entries(causeWeekMap).filter(([,c])=>c>0).map(([cause,count])=>({cause,count})), total: weekTotal };
+  const causeDay  = { rows: Object.entries(causeDayMap).filter(([,c])=>c>0).map(([cause,count])=>({cause,count})), total: dayTotal };
+  const impRows = Object.entries(impMap).map(([cause,st])=>({cause, ...st}));
+  const impTotals = {};
+  KNOWN_STATUS.forEach(s=>{ impTotals[s] = impRows.reduce((a,r)=>a+(r[s]||0),0); });
+  const improvement = { statusNames: KNOWN_STATUS, rows: impRows, totals: impTotals };
+  const top5Week = listRows.filter(r=>(r.weekSum||0)>0).sort((a,b)=>b.weekSum-a.weekSum).slice(0,5)
+    .map(r=>({ machine:r.machine, alarmName:r.alarmName, caseNo:r.caseNo, count:r.weekSum }));
+  const top5Day = listRows.filter(r=>(r.daySum||0)>0).sort((a,b)=>b.daySum-a.daySum).slice(0,5)
+    .map(r=>({ machine:r.machine, alarmName:r.alarmName, caseNo:r.caseNo, count:r.daySum }));
+  return { dayDate: weekEnd, weekStart, weekEnd, causeDay, causeWeek, top5Day, top5Week, improvement };
 }
 
 /* ===================== File parsing (workbook -> data for UI/dashboard) ===================== */
 function parseVendorFile(wb, fileName){
   const wsList = wb.Sheets['list'];
   if(!wsList) throw new Error("Could not find the 'list' sheet. Please check if this is a standard alarm list format (Summary/list/Alarm).");
-  const wsSummary = wb.Sheets['Summary'];
-  let summary = null, summaryError = null;
-  if(wsSummary){
-    try{ summary = parseSummarySheet(wsSummary); }
-    catch(e){ console.warn('Summary parsing failed', e); summaryError = e.message || String(e); }
-  } else {
-    summaryError = "No 'Summary' sheet found in this file";
+  // Derive the week range from the list sheet's real date columns (the Summary sheet's
+  // dates are volatile =TODAY() formulas with no cached value, so they can't be read here).
+  const range = decodeRef(wsList);
+  const listDates = [];
+  for(let c=14; c<=range.e.c; c++){
+    const d = toExcelDate(cellAt(wsList,1,c));
+    if(d && colHasData(wsList, c, range.e.r)) listDates.push(d); // ignore empty future-date columns
   }
-  if(summary && !summary.weekStart){
-    summaryError = summaryError || summary.weekDebug || "Could not locate the 'Week' date range in the Summary sheet";
+  let weekStart=null, weekEnd=null;
+  if(listDates.length){
+    weekEnd = new Date(Math.max(...listDates.map(d=>d.getTime())));
+    weekStart = new Date(weekEnd); weekStart.setDate(weekStart.getDate()-6);
   }
-  const weekStart = summary?.weekStart, weekEnd = summary?.weekEnd;
   const { rows: listRows, dateCols } = parseListSheet(wsList, weekStart, weekEnd);
-  return { fileName, summary, summaryError, listRows, dateCols };
+  if(!listRows.length) throw new Error("The 'list' sheet has no alarm rows.");
+  const summary = buildSummaryFromList(listRows, dateCols, weekStart, weekEnd);
+  return { fileName, summary, summaryError: null, listRows, dateCols };
 }
 
 /* ===================== History (for weekly trend, localStorage) ===================== */
