@@ -364,6 +364,20 @@ function parseSummarySheet(ws){
     }
     weekStart = dates[0] ?? null; weekEnd = dates[dates.length-1] ?? null;
     if(!weekStart) weekDebug = `Week label found at row ${weekCell.r+1}, but none of the following cells parsed as dates: ${dump.join(' | ')}`;
+  } else {
+    // The 'Week' label itself wasn't found. Dump the first non-empty cells in the
+    // top-left of the sheet so we can see exactly what the library parsed there —
+    // this is where 'Day'/'Week' labels are expected to live.
+    const probe = [];
+    for(let r=0; r<8 && probe.length<20; r++){
+      for(let c=0; c<14; c++){
+        const cell = cellAt(ws, r, c);
+        if(cell && cell.v!==undefined && cell.v!==null && cell.v!==''){
+          probe.push(`${XLSX.utils.encode_cell({r,c})}=${JSON.stringify({t:cell.t, v:cell.v})}`);
+        }
+      }
+    }
+    weekDebug = `'Week' label was not found anywhere in the sheet. First non-empty cells found: ${probe.join(' | ') || '(sheet appears empty to the parser)'}`;
   }
   return {
     dayDate, weekStart, weekEnd, weekDebug,
