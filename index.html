@@ -301,17 +301,49 @@ function parseImprovementTable(ws){
   }
   return { statusNames: statusCols.map(s=>s.name), rows, totals };
 }
-function toExcelDate(v){
-  if(v instanceof Date && !isNaN(v.getTime())) return v;
-  if(typeof v === 'number' && v > 20000 && v < 60000){
-    // Excel date serial (days since 1899-12-30) — fallback in case a cell wasn't
-    // auto-converted to a JS Date (e.g. after being re-saved by a spreadsheet library).
-    const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+function excelSerialToDate(n){
+  const d = new Date(Math.round((n - 25569) * 86400 * 1000));
+  return isNaN(d.getTime()) ? null : d;
+}
+function parseDisplayDateString(s){
+  if(!s) return null;
+  s = s.trim();
+  let d = new Date(s);
+  if(!isNaN(d.getTime())) return d;
+  // Common Excel display formats: "7/10/2026", "07/10/26", "2026-07-10"
+  const m = s.match(/^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})/);
+  if(m){
+    const [, a, b, c] = m;
+    if(a.length===4){
+      d = new Date(Number(a), Number(b)-1, Number(c));
+    } else {
+      let year = Number(c);
+      if(String(c).length===2) year += (year<70?2000:1900);
+      d = new Date(year, Number(a)-1, Number(b));
+    }
     if(!isNaN(d.getTime())) return d;
   }
+  return null;
+}
+// Accepts a SheetJS cell object (not just its .v) because when SheetJS's own date-type
+// detection misses a custom number format, the raw value stays a number/string in .v —
+// but the human-readable, already-formatted text is still available in .w, so we fall
+// back to parsing that. This is more robust than relying on `instanceof Date` alone.
+function toExcelDate(cell){
+  if(!cell) return null;
+  const v = cell.v;
+  if(v instanceof Date && !isNaN(v.getTime())) return v;
+  if(typeof v === 'number' && v > 20000 && v < 60000){
+    const d = excelSerialToDate(v);
+    if(d) return d;
+  }
   if(typeof v === 'string' && v.trim()){
-    const d = new Date(v.trim());
-    if(!isNaN(d.getTime())) return d;
+    const d = parseDisplayDateString(v);
+    if(d) return d;
+  }
+  if(typeof cell.w === 'string' && cell.w.trim()){
+    const d = parseDisplayDateString(cell.w);
+    if(d) return d;
   }
   return null;
 }
@@ -320,17 +352,21 @@ function parseSummarySheet(ws){
   const dayCell = findCell(ws, v=> norm(v)==='day');
   const dayDate = dayCell ? cellAt(ws, dayCell.r, dayCell.c+1)?.v : null;
   const weekCell = findCell(ws, v=> norm(v)==='week');
-  let weekStart=null, weekEnd=null;
+  let weekStart=null, weekEnd=null, weekDebug=null;
   if(weekCell){
     const dates=[];
+    const dump=[];
     for(let cc=weekCell.c+1; cc<=weekCell.c+8; cc++){
-      const d = toExcelDate(cellAt(ws, weekCell.r, cc)?.v);
+      const cell = cellAt(ws, weekCell.r, cc);
+      const d = toExcelDate(cell);
+      dump.push(`${XLSX.utils.encode_cell({r:weekCell.r,c:cc})}=${cell? JSON.stringify({t:cell.t, v:cell.v, w:cell.w, f:cell.f}) : 'empty'}`);
       if(d) dates.push(d);
     }
     weekStart = dates[0] ?? null; weekEnd = dates[dates.length-1] ?? null;
+    if(!weekStart) weekDebug = `Week label found at row ${weekCell.r+1}, but none of the following cells parsed as dates: ${dump.join(' | ')}`;
   }
   return {
-    dayDate, weekStart, weekEnd,
+    dayDate, weekStart, weekEnd, weekDebug,
     causeDay: parseCauseTable(ws, 'Alarm Occurrence by Cause (Day)'),
     causeWeek: parseCauseTable(ws, 'Alarm Occurrence by Cause (Week)'),
     top5Day: parseTop5Table(ws, 'Top 5 Alarm Case (Day)'),
@@ -356,8 +392,8 @@ function parseListSheet(ws, weekStart, weekEnd){
   const fillMachine = buildFill(2), fillAlarmName = buildFill(3), fillDailyCount = buildFill(4), fillLocation = buildFill(5);
   const dateCols = [];
   for(let c=14; c<=range.e.c; c++){
-    const v = cellAt(ws,1,c)?.v;
-    if(v instanceof Date) dateCols.push({col:c, date:v});
+    const d = toExcelDate(cellAt(ws,1,c));
+    if(d) dateCols.push({col:c, date:d});
   }
   const rows = [];
   for(let r=2; r<=range.e.r; r++){
@@ -406,7 +442,7 @@ function parseVendorFile(wb, fileName){
     summaryError = "No 'Summary' sheet found in this file";
   }
   if(summary && !summary.weekStart){
-    summaryError = summaryError || "Could not locate the 'Week' date range in the Summary sheet";
+    summaryError = summaryError || summary.weekDebug || "Could not locate the 'Week' date range in the Summary sheet";
   }
   const weekStart = summary?.weekStart, weekEnd = summary?.weekEnd;
   const { rows: listRows, dateCols } = parseListSheet(wsList, weekStart, weekEnd);
