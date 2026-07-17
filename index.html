@@ -301,16 +301,31 @@ function parseImprovementTable(ws){
   }
   return { statusNames: statusCols.map(s=>s.name), rows, totals };
 }
+function toExcelDate(v){
+  if(v instanceof Date && !isNaN(v.getTime())) return v;
+  if(typeof v === 'number' && v > 20000 && v < 60000){
+    // Excel date serial (days since 1899-12-30) — fallback in case a cell wasn't
+    // auto-converted to a JS Date (e.g. after being re-saved by a spreadsheet library).
+    const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+    if(!isNaN(d.getTime())) return d;
+  }
+  if(typeof v === 'string' && v.trim()){
+    const d = new Date(v.trim());
+    if(!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
 function parseSummarySheet(ws){
-  const dayCell = findCell(ws, v=>v==='Day');
+  const norm = v => typeof v==='string' ? v.trim().toLowerCase() : v;
+  const dayCell = findCell(ws, v=> norm(v)==='day');
   const dayDate = dayCell ? cellAt(ws, dayCell.r, dayCell.c+1)?.v : null;
-  const weekCell = findCell(ws, v=>v==='Week');
+  const weekCell = findCell(ws, v=> norm(v)==='week');
   let weekStart=null, weekEnd=null;
   if(weekCell){
     const dates=[];
-    for(let cc=weekCell.c+1; cc<=weekCell.c+6; cc++){
-      const cv = cellAt(ws, weekCell.r, cc)?.v;
-      if(cv instanceof Date) dates.push(cv);
+    for(let cc=weekCell.c+1; cc<=weekCell.c+8; cc++){
+      const d = toExcelDate(cellAt(ws, weekCell.r, cc)?.v);
+      if(d) dates.push(d);
     }
     weekStart = dates[0] ?? null; weekEnd = dates[dates.length-1] ?? null;
   }
