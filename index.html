@@ -126,6 +126,9 @@ const ACTION_HINT = {
   'Completed': 'Only check for recurrence'
 };
 const HISTORY_KEY = 'alarmTool_history_v2';
+// Firestore caps each document at 1MB. Files are stored as base64 (~1.33x larger)
+// inside a Firestore doc, so keep raw file size well under that ceiling.
+const MAX_FILE_BYTES = 650 * 1024;
 
 const state = {};
 VENDORS.forEach(v => state[v] = { files: [], current: null });
@@ -380,14 +383,19 @@ function parseVendorFile(wb, fileName){
   const wsList = wb.Sheets['list'];
   if(!wsList) throw new Error("Could not find the 'list' sheet. Please check if this is a standard alarm list format (Summary/list/Alarm).");
   const wsSummary = wb.Sheets['Summary'];
-  let summary = null;
+  let summary = null, summaryError = null;
   if(wsSummary){
     try{ summary = parseSummarySheet(wsSummary); }
-    catch(e){ console.warn('Summary parsing failed', e); }
+    catch(e){ console.warn('Summary parsing failed', e); summaryError = e.message || String(e); }
+  } else {
+    summaryError = "No 'Summary' sheet found in this file";
+  }
+  if(summary && !summary.weekStart){
+    summaryError = summaryError || "Could not locate the 'Week' date range in the Summary sheet";
   }
   const weekStart = summary?.weekStart, weekEnd = summary?.weekEnd;
   const { rows: listRows, dateCols } = parseListSheet(wsList, weekStart, weekEnd);
-  return { fileName, summary, listRows, dateCols };
+  return { fileName, summary, summaryError, listRows, dateCols };
 }
 
 /* ===================== History (for weekly trend, localStorage) ===================== */
@@ -452,12 +460,13 @@ function vendorPanelHTML(v){
   return `
     <div class="card guide">
       <b>How to use</b> — Drag &amp; drop files below (or click to browse) to add them to the shared storage. You can select/drop multiple files at once, and existing files are never deleted — everything keeps accumulating as history. Alarm list Excel files (.xlsx) are automatically parsed, and the most recently uploaded valid alarm list is reflected in the dashboard. Other file types (PPT, Word, PDF, etc.) are stored for shared reference only and are not used in the dashboard.
+      <b>File size limit: each file must be under ~650KB on the current free plan</b> (larger PPT/Word/PDF files will be skipped — ask if you need support for bigger files).
       <b>Anyone who opens this link can view and upload to the same list, so please share the link only with internal stakeholders.</b>
     </div>
     <div class="card">
       <div class="dropzone" id="dropzone-${v}">
         📥 Drag &amp; drop files here, or click to choose files (multiple files allowed)<br>
-        <span class="muted" style="font-size:11.5px;">.xlsx alarm lists update the dashboard · other files (pptx, docx, pdf, etc.) are stored for reference only</span>
+        <span class="muted" style="font-size:11.5px;">.xlsx alarm lists update the dashboard · other files (pptx, docx, pdf, etc.) are stored for reference only · max ~650KB per file</span>
       </div>
       <input type="file" id="file-${v}" accept=".xlsx,.xls,.pptx,.ppt,.docx,.doc,.pdf" multiple style="display:none;">
       <div class="toolbar">
@@ -562,7 +571,10 @@ function renderFileList(vendor){
   if(cur){
     const s = cur.summary;
     const weekStr = s && s.weekStart ? `${fmtDate(s.weekStart)} ~ ${fmtDate(s.weekEnd)}` : 'No period info';
-    info.innerHTML = `📊 Currently reflected in dashboard: <b>${esc(cur.fileName)}</b> · Reference week: ${weekStr} · ${cur.listRows.length} alarm items`;
+    const warn = cur.summaryError
+      ? `<br><span style="color:#dc2626;">⚠ Summary sheet issue: ${esc(cur.summaryError)} — cause/trend charts will show 0 until a file with a standard Summary sheet is uploaded. The raw list data (${cur.listRows.length} rows) is still intact.</span>`
+      : '';
+    info.innerHTML = `📊 Currently reflected in dashboard: <b>${esc(cur.fileName)}</b> · Reference week: ${weekStr} · ${cur.listRows.length} alarm items${warn}`;
   } else {
     info.innerHTML = files.length ? '<span class="muted">No valid alarm list (.xlsx) found among the uploaded files yet — the dashboard has no data to show.</span>' : '';
   }
@@ -576,9 +588,14 @@ async function handleFilesSelect(vendor, fileList){
     alert('Cannot upload because Firebase is not configured. Please check FIREBASE_CONFIG at the top of the code.');
     return;
   }
-  let ok = 0, fail = 0, skippedFormat = 0;
+  let ok = 0, fail = 0, skippedFormat = 0, tooLarge = 0;
   for(let i=0;i<files.length;i++){
     const file = files[i];
+    if(file.size > MAX_FILE_BYTES){
+      tooLarge++;
+      console.warn(`Skipped ${file.name}: ${(file.size/1024/1024).toFixed(1)}MB exceeds the ${(MAX_FILE_BYTES/1024).toFixed(0)}KB shared-storage limit.`);
+      continue;
+    }
     setSyncStatus(vendor, `☁ Uploading ${i+1}/${files.length}: ${file.name}...`);
     try{
       const ext = fileExt(file.name);
@@ -610,10 +627,14 @@ async function handleFilesSelect(vendor, fileList){
   if(input) input.value = '';
   await refreshVendor(vendor);
   renderDashboard();
+  if(tooLarge){
+    const sizeKB = (MAX_FILE_BYTES/1024).toFixed(0);
+    alert(`${tooLarge} file(s) were not uploaded because they exceed the ${sizeKB}KB shared-storage limit on the current (free) plan.\n\nLarger files like PPT/Word decks usually don't fit. To support large files, the Firebase project would need to be upgraded to a paid (Blaze) plan with Cloud Storage — ask about this if you need it.`);
+  }
   if(fail){
-    setSyncStatus(vendor, `⚠ ${ok} uploaded, ${fail} failed`, true);
-  } else if(skippedFormat){
-    setSyncStatus(vendor, `✅ ${ok} file(s) uploaded (${skippedFormat} not in standard alarm list format — stored as reference only)`);
+    setSyncStatus(vendor, `⚠ ${ok} uploaded, ${fail} failed${tooLarge?`, ${tooLarge} too large`:''}`, true);
+  } else if(skippedFormat || tooLarge){
+    setSyncStatus(vendor, `✅ ${ok} file(s) uploaded${skippedFormat?` (${skippedFormat} not in standard alarm list format — stored as reference only)`:''}${tooLarge?` · ${tooLarge} skipped (too large)`:''}`, tooLarge>0 && ok===0);
   }
 }
 function downloadFile(vendor, fileId){
@@ -875,6 +896,7 @@ function renderNarrative(vendors){
       });
     }
   });
+  const summaryErrors = vendors.filter(v=>state[v].current?.summaryError).map(v=>`${v}: ${state[v].current.summaryError}`);
   const topCauses = Object.entries(causeAgg).filter(([,c])=>c>0).sort((a,b)=>b[1]-a[1]).slice(0,2);
   const wow = computeWowDelta(vendors);
   const wowSentence = wow
@@ -896,6 +918,7 @@ function renderNarrative(vendors){
     ? focus.map((it,idx)=>`${idx+1}) ${esc(it.vendor)} ${esc(it.machine)} Case ${esc(it.caseNo)} (${esc(it.cause)}) — ${it.weekSum} cases this week, current status ${esc(it.status||'Not specified')} → ${ACTION_HINT[it.status] || 'Current status check needed'}`).join('<br>')
     : 'No items requiring priority attention were identified.';
   box.innerHTML = `
+    ${summaryErrors.length ? `<div style="margin-bottom:10px;color:#dc2626;font-size:12.5px;">⚠ Summary sheet parsing issue — ${esc(summaryErrors.join(' · '))}. Cause/trend numbers for that vendor will read as 0 until a file with a standard Summary sheet is uploaded.</div>` : ''}
     <div style="margin-bottom:12px;"><b>📝 This Week's Activity Summary</b> <span class="muted">(${weekStart?`${fmtDate(weekStart)}~${fmtDate(weekEnd)}`:'Period unknown'} · ${esc(vendors.join(', '))})</span><br>
     A total of <b>${weekTotal.toLocaleString('en-US')} alarms</b> occurred this week. ${wowSentence} By cause, ${causeSentence}${topCaseSentence} Action status: On-going ${ongoing}, Monitoring ${monitoring}, Completed ${completed}.</div>
     <div><b>👉 Next Week's Focus Recommendations (Action Items)</b><br>${focusSentence}</div>
