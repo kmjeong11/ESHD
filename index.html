@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ESHD FA 알람 리스트 관리 &amp; 리포트 툴</title>
+<title>ESHD FA Alarm List Management &amp; Report Tool</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --blue:#2563eb; --blue-d:#1d4ed8; --bg:#f4f6f9; --card:#ffffff; --border:#e2e6ec;
@@ -32,7 +34,7 @@
     color:var(--muted); border-bottom:3px solid transparent; white-space:nowrap; font-weight:600;
   }
   nav button.active{ color:var(--blue-d); border-bottom-color:var(--blue-d); }
-  main{ padding:20px; max-width:1300px; margin:0 auto; }
+  main{ padding:20px; max-width:1400px; margin:0 auto; }
   .panel{ display:none; }
   .panel.active{ display:block; }
   .card{
@@ -42,7 +44,7 @@
   .card h3{margin:0 0 10px; font-size:14.5px;}
   .guide{ background:#eef4ff; border-color:#c9dcff; font-size:13px; line-height:1.7; color:#1e3a8a; }
   .guide b{color:#1d4ed8;}
-  .toolbar{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+  .toolbar{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
   .toolbar input[type=file]{ font-size:13px; }
   button.btn{
     border:1px solid var(--blue-d); background:var(--blue); color:#fff; border-radius:6px;
@@ -50,46 +52,46 @@
   }
   button.btn.secondary{ background:#fff; color:var(--blue-d); }
   button.btn.gray{ background:#fff; color:var(--muted); border-color:var(--border); }
+  button.btn.sm{ padding:4px 9px; font-size:12px; border-radius:5px; }
   button.btn:hover{ opacity:.9; }
+  button.btn:disabled{ opacity:.5; cursor:default; }
   .fileinfo{ font-size:12.5px; color:var(--muted); }
   .fileinfo b{color:var(--text);}
-  .tablewrap{ overflow:auto; max-height:560px; border:1px solid var(--border); border-radius:8px; }
+  .tablewrap{ overflow:auto; max-height:420px; border:1px solid var(--border); border-radius:8px; }
   table{ border-collapse:collapse; width:100%; font-size:12.5px; }
-  table th, table td{ border-bottom:1px solid var(--border); border-right:1px solid #f0f2f5; padding:6px 8px; text-align:left; vertical-align:top; }
+  table th, table td{ border-bottom:1px solid var(--border); border-right:1px solid #f0f2f5; padding:8px 10px; text-align:left; vertical-align:middle; }
   table thead th{ background:#f8f9fb; position:sticky; top:0; z-index:1; font-weight:700; color:#374151; }
-  table td select, table td textarea, table td input{
-    width:100%; border:1px solid #dfe3ea; border-radius:4px; font-size:12.5px; padding:4px 5px;
-    font-family:inherit; background:#fff;
-  }
-  table td textarea{ min-height:70px; resize:vertical; line-height:1.5; }
   table tbody tr:hover{ background:#fafbfd; }
   .num{ text-align:right; white-space:nowrap; font-weight:600; }
   .muted{ color:var(--muted); }
   .badge{ display:inline-block; padding:2px 8px; border-radius:10px; font-size:11.5px; font-weight:700; color:#fff; }
-  .kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:16px; }
+  .kpis{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:16px; }
   .kpi{ background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
   .kpi .label{ font-size:12px; color:var(--muted); margin-bottom:6px; }
-  .kpi .value{ font-size:24px; font-weight:800; }
+  .kpi .value{ font-size:23px; font-weight:800; }
   .kpi .delta{ font-size:12px; margin-top:4px; font-weight:600; }
   .delta.up{ color:var(--red); } .delta.down{ color:var(--blue-d); } .delta.flat{ color:var(--muted); }
   .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  @media (max-width:900px){ .grid2{ grid-template-columns:1fr; } }
-  .chartbox{ position:relative; height:260px; }
+  .grid3{ display:grid; grid-template-columns:1.2fr 1fr 1.2fr; gap:16px; }
+  @media (max-width:960px){ .grid2, .grid3{ grid-template-columns:1fr; } }
+  .chartbox{ position:relative; height:250px; }
   select.vendorfilter{ padding:7px 10px; border-radius:6px; border:1px solid var(--border); font-size:13px; font-weight:600; }
   .focusItem{ border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px; background:#fffefb; }
-  .focusItem .top{ display:flex; justify-content:space-between; font-size:13px; font-weight:700; }
+  .focusItem .top{ display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; font-size:13px; font-weight:700; }
   .focusItem .desc{ font-size:12px; color:var(--muted); margin-top:4px; white-space:pre-wrap; }
+  .focusItem .hint{ font-size:12px; color:#92400e; margin-top:4px; font-weight:600; }
   .rank{ display:inline-block; width:20px; height:20px; background:var(--blue); color:#fff; border-radius:50%; text-align:center; font-size:11px; line-height:20px; margin-right:6px; }
-  .empty{ text-align:center; color:var(--muted); padding:40px 10px; font-size:13px; }
+  .empty{ text-align:center; color:var(--muted); padding:30px 10px; font-size:13px; }
   footer{ text-align:center; color:var(--muted); font-size:11.5px; padding:20px; }
   .tag{ font-size:11px; background:#eef2ff; color:#4338ca; padding:2px 6px; border-radius:4px; font-weight:700; margin-right:6px; }
+  .tag.new{ background:#dcfce7; color:#15803d; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>ESHD FA 알람 리스트 관리 &amp; 리포트 툴</h1>
-  <p>업체별 알람 리스트 업로드/편집 · 공유 저장소(GitHub) 자동 동기화 · 주간 알람 현황 대시보드</p>
+  <h1>ESHD FA Alarm List Management &amp; Report Tool</h1>
+  <p>Vendor-based alarm list upload (multi-file history management) · Shared storage (Firebase) auto-sync · Weekly alarm status dashboard &amp; automatic report</p>
 </header>
 
 <nav id="tabnav"></nav>
@@ -98,41 +100,58 @@
   <div id="panels"></div>
 </main>
 
-<footer>업로드/저장한 파일은 이 저장소의 data 폴더(GitHub)에 저장되어 이 링크로 들어오는 모든 사람에게 공유됩니다. 링크는 내부 관계자에게만 전달하세요.</footer>
+<footer>Uploaded files are stored in the Firebase shared storage and are shared with everyone who accesses this link. Please share the link only with internal stakeholders.</footer>
 
 <script>
-/* ===================== 기본 설정 ===================== */
+/* ===================== Basic settings ===================== */
 const VENDORS = ['AVACO','PRI','EQCELL','CNS'];
 const VENDOR_COLOR = {AVACO:'#2563eb', PRI:'#16a34a', EQCELL:'#ea580c', CNS:'#7c3aed'};
 const STATUS_COLOR = {
   'Unavoidable':'#6b7280', 'Operational':'#0891b2', 'On-going':'#ea580c', 'On-Going':'#ea580c',
   'Monitoring':'#7c3aed', 'Completed':'#16a34a'
 };
-const STATUS_OPTIONS = ['','Unavoidable','Operational','On-going','Monitoring','Completed'];
-const CAUSE_OPTIONS = ['','Equipment','Operator','Material','IT','Process Equipment','Utility','Environment','Unknown'];
-const FIELD_COL = { status:6, cause:8, monitoringUnit:9, symptom:10, action:11, observedIssue:12, actionEn:13 };
-const HISTORY_KEY = 'alarmTool_history_v1';
+const CAUSE_LIST = ['Equipment','Operator','Material','IT','Process Equipment','Utility','Environment','Unknown'];
+const CAUSE_COLORS = ['#2563eb','#ea580c','#16a34a','#7c3aed','#0891b2','#ca8a04','#dc2626','#6b7280'];
+const ACTION_HINT = {
+  'On-going': 'Root cause analysis / corrective action needed',
+  'Monitoring': 'Keep monitoring for recurrence',
+  'Unavoidable': 'Re-inspect standard work/sensor if it recurs',
+  'Operational': 'Re-verify whether this is a normal operational alarm',
+  'Completed': 'Only check for recurrence'
+};
+const HISTORY_KEY = 'alarmTool_history_v2';
 
-const state = {}; // vendor -> parsed data or null
-VENDORS.forEach(v => state[v] = null);
+const state = {};
+VENDORS.forEach(v => state[v] = { files: [], current: null });
 const chartInstances = {};
 
-/* ===================== GitHub 공유 저장소 설정 =====================
-   업로드/저장한 파일을 이 저장소의 data/{vendor}.xlsx 로 커밋해서,
-   같은 링크로 들어오는 누구나 최신 파일을 자동으로 볼 수 있게 합니다.
-   ⚠ 아래 token은 이 페이지 소스에 그대로 노출됩니다 (누구나 '페이지 소스 보기'로 확인 가능).
-      반드시 이 저장소 하나에만 쓰기 권한이 있는 "Fine-grained personal access token"
-      (Permissions: Contents = Read and write, 나머지는 No access)을 만들어 넣으세요.
-      절대 재사용하는 토큰이나 계정 전체 권한 토큰을 넣지 마세요.
+/* ===================== Firebase shared storage setup =====================
+   Uploaded files are stored in Firestore (vendors/{vendor}/files/{fileId}).
+   Existing files are not overwritten and keep accumulating; the most
+   recently uploaded file is reflected in the dashboard.
+   The Firebase apiKey and similar values are not secret keys — they are
+   designed to be safe even if exposed publicly.
+   Control security via "Rules" in the Firestore console.
 */
-const GITHUB_CONFIG = {
-  owner: 'kmjeong11',
-  repo: 'ESHD',
-  branch: 'main',
-  token: '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'
+const FIREBASE_CONFIG = {
+  apiKey: "PASTE_API_KEY",
+  authDomain: "PASTE_PROJECT_ID.firebaseapp.com",
+  projectId: "PASTE_PROJECT_ID",
+  storageBucket: "PASTE_PROJECT_ID.appspot.com",
+  messagingSenderId: "PASTE_SENDER_ID",
+  appId: "PASTE_APP_ID"
 };
-function ghConfigured(){ return !!GITHUB_CONFIG.token && !GITHUB_CONFIG.token.includes('PASTE_'); }
-function ghHeaders(){ return { 'Authorization': `Bearer ${GITHUB_CONFIG.token}`, 'Accept':'application/vnd.github+json' }; }
+let fbDb = null;
+function fbConfigured(){ return !!FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.includes('PASTE'); }
+function fbGetDb(){
+  if(!fbDb){
+    firebase.initializeApp(FIREBASE_CONFIG);
+    fbDb = firebase.firestore();
+  }
+  return fbDb;
+}
+function filesCol(vendor){ return fbGetDb().collection('vendors').doc(vendor).collection('files'); }
+
 function arrayBufferToBase64(buf){
   let binary = '';
   const bytes = new Uint8Array(buf);
@@ -150,63 +169,30 @@ function setSyncStatus(vendor, text, isError){
   const el = document.getElementById(`syncstatus-${vendor}`);
   if(el){ el.textContent = text; el.style.color = isError ? '#dc2626' : '#6b7280'; }
 }
-async function githubGetFileSha(vendor){
-  const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/data/${vendor}.xlsx?ref=${GITHUB_CONFIG.branch}`;
-  const res = await fetch(url, { headers: ghHeaders() });
-  if(res.status===404) return null;
-  if(!res.ok) throw new Error('조회 실패 ('+res.status+')');
-  const j = await res.json();
-  return j.sha;
+
+/* ===================== Firestore file list / upload / delete ===================== */
+async function fbListFiles(vendor){
+  const snap = await filesCol(vendor).orderBy('uploadedAt','desc').get();
+  return snap.docs.map(doc=>{
+    const d = doc.data();
+    return {
+      id: doc.id,
+      fileName: d.fileName,
+      base64: d.base64,
+      uploadedAt: (d.uploadedAt && d.uploadedAt.toDate) ? d.uploadedAt.toDate() : null
+    };
+  });
 }
-async function githubSaveVendorFile(vendor){
-  if(!ghConfigured()){
-    setSyncStatus(vendor, '⚠ GitHub 토큰이 설정되지 않아 공유 저장을 건너뜁니다 (코드 상단 GITHUB_CONFIG.token 확인). 로컬 다운로드는 정상 동작합니다.', true);
-    return;
-  }
-  const data = state[vendor];
-  if(!data) return;
-  setSyncStatus(vendor, '☁ 공유 저장소에 저장 중...');
-  try{
-    const arr = XLSX.write(data.workbook, {type:'array', bookType:'xlsx'});
-    const base64 = arrayBufferToBase64(arr);
-    const sha = await githubGetFileSha(vendor);
-    const body = { message:`Update ${vendor} alarm list (${todayStr()})`, content:base64, branch:GITHUB_CONFIG.branch };
-    if(sha) body.sha = sha;
-    const res = await fetch(`https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/data/${vendor}.xlsx`, {
-      method:'PUT', headers:{...ghHeaders(), 'Content-Type':'application/json'}, body: JSON.stringify(body)
-    });
-    if(!res.ok){ const t = await res.text(); throw new Error(res.status+' '+t.slice(0,150)); }
-    setSyncStatus(vendor, '✅ 공유 저장소에 저장 완료 · ' + new Date().toLocaleString('ko-KR'));
-  }catch(err){
-    console.error(err);
-    setSyncStatus(vendor, '❌ 공유 저장 실패: ' + err.message, true);
-  }
+async function fbUploadFile(vendor, fileName, base64){
+  await filesCol(vendor).add({
+    fileName, base64, uploadedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
 }
-async function githubLoadVendorFile(vendor, opts){
-  const silent = opts && opts.silent;
-  if(!ghConfigured()) return false;
-  try{
-    const url = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/data/${vendor}.xlsx?ref=${GITHUB_CONFIG.branch}`;
-    const res = await fetch(url, { headers: ghHeaders() });
-    if(res.status===404){ if(!silent) setSyncStatus(vendor, '공유 저장소에 아직 저장된 파일이 없습니다. 먼저 업로드해주세요.'); return false; }
-    if(!res.ok) throw new Error('불러오기 실패 ('+res.status+')');
-    const j = await res.json();
-    const bytes = base64ToUint8Array(j.content);
-    const wb = XLSX.read(bytes, {type:'array', cellDates:true});
-    const data = parseVendorFile(vendor, wb, `${vendor}.xlsx`);
-    data.sourceNote = '공유 저장소(GitHub)에서 불러옴';
-    renderVendorTable(vendor);
-    renderFileInfo(vendor);
-    if(!silent) setSyncStatus(vendor, '🔄 최신본을 불러왔습니다 · ' + new Date().toLocaleTimeString('ko-KR'));
-    return true;
-  }catch(err){
-    console.warn('githubLoadVendorFile', vendor, err);
-    if(!silent) setSyncStatus(vendor, '❌ 불러오기 실패: ' + err.message, true);
-    return false;
-  }
+async function fbDeleteFile(vendor, fileId){
+  await filesCol(vendor).doc(fileId).delete();
 }
 
-/* ===================== 유틸 ===================== */
+/* ===================== Summary sheet parsing ===================== */
 function cellAt(ws, r, c){ return ws[XLSX.utils.encode_cell({r,c})]; }
 function decodeRef(ws){ return XLSX.utils.decode_range(ws['!ref']); }
 function findCell(ws, matchFn){
@@ -238,9 +224,8 @@ function esc(s){
   if(s===undefined || s===null) return '';
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-function num(v){ return (typeof v === 'number') ? v.toLocaleString('ko-KR') : (v ?? '-'); }
+function num(v){ return (typeof v === 'number') ? v.toLocaleString('en-US') : (v ?? '-'); }
 
-/* ===================== Summary 시트 파싱 ===================== */
 function parseCauseTable(ws, titleSubstr){
   const title = findCell(ws, v=> typeof v==='string' && v.includes(titleSubstr));
   if(!title) return null;
@@ -319,7 +304,7 @@ function parseSummarySheet(ws){
   };
 }
 
-/* ===================== list 시트 파싱 ===================== */
+/* ===================== list sheet parsing ===================== */
 function parseListSheet(ws, weekStart, weekEnd){
   const range = decodeRef(ws);
   const merges = ws['!merges'] || [];
@@ -373,25 +358,22 @@ function parseListSheet(ws, weekStart, weekEnd){
   return { rows, dateCols };
 }
 
-/* ===================== 파일 업로드 / 파싱 ===================== */
-function parseVendorFile(vendor, wb, fileName){
+/* ===================== File parsing (workbook -> data for UI/dashboard) ===================== */
+function parseVendorFile(wb, fileName){
   const wsList = wb.Sheets['list'];
-  if(!wsList) throw new Error("'list' 시트를 찾을 수 없습니다. 표준 알람 리스트 양식(Summary/list/Alarm)인지 확인해주세요.");
+  if(!wsList) throw new Error("Could not find the 'list' sheet. Please check if this is a standard alarm list format (Summary/list/Alarm).");
   const wsSummary = wb.Sheets['Summary'];
   let summary = null;
   if(wsSummary){
     try{ summary = parseSummarySheet(wsSummary); }
-    catch(e){ console.warn('Summary 파싱 실패', e); }
+    catch(e){ console.warn('Summary parsing failed', e); }
   }
   const weekStart = summary?.weekStart, weekEnd = summary?.weekEnd;
   const { rows: listRows, dateCols } = parseListSheet(wsList, weekStart, weekEnd);
-  const data = { workbook: wb, wsList, wsSummary, fileName, summary, listRows, dateCols, vendor };
-  state[vendor] = data;
-  saveHistorySnapshot(vendor, data);
-  return data;
+  return { fileName, summary, listRows, dateCols };
 }
 
-/* ===================== 히스토리 (트렌드용, localStorage) ===================== */
+/* ===================== History (for weekly trend, localStorage) ===================== */
 function loadHistory(){
   try{ return JSON.parse(localStorage.getItem(HISTORY_KEY)) || {}; }catch(e){ return {}; }
 }
@@ -419,9 +401,9 @@ function saveHistorySnapshot(vendor, data){
   localStorage.setItem(HISTORY_KEY, JSON.stringify(hist));
 }
 
-/* ===================== 탭/패널 생성 ===================== */
+/* ===================== Tab/panel creation ===================== */
 const TABS = [...VENDORS, 'DASH'];
-const TAB_LABEL = { AVACO:'AVACO', PRI:'PRI', EQCELL:'EQCELL', CNS:'CNS', DASH:'📊 대시보드' };
+const TAB_LABEL = { AVACO:'AVACO', PRI:'PRI', EQCELL:'EQCELL', CNS:'CNS', DASH:'📊 Dashboard' };
 
 function buildTabsAndPanels(){
   const nav = document.getElementById('tabnav');
@@ -452,39 +434,27 @@ function buildTabsAndPanels(){
 function vendorPanelHTML(v){
   return `
     <div class="card guide">
-      <b>사용 순서</b> — ① 알람 리스트(.xlsx) 업로드(자동으로 공유 저장소에 저장됨) → ② 표에서 상태/원인/조치 내용 확인·수정 → ③ '☁ 저장(공유)'을 눌러 수정사항 반영 → ④ 필요하면 '⬇ 다운로드'로 로컬 파일도 보관.
-      <b>이 링크로 들어오는 누구나 최신 저장 내용을 자동으로 보게 됩니다.</b> 링크를 아는 사람은 누구나 업로드/저장이 가능하니 내부 관계자에게만 링크를 전달해주세요.
+      <b>How to use</b> — Uploading an alarm list (.xlsx) adds a new entry to the shared storage (existing files are not deleted and keep accumulating as history). The most recently uploaded file is automatically reflected in the dashboard.
+      <b>Anyone who opens this link can view and upload to the same list, so please share the link only with internal stakeholders.</b>
     </div>
     <div class="card">
       <div class="toolbar">
         <input type="file" id="file-${v}" accept=".xlsx,.xls">
-        <button class="btn" data-action="save-remote" data-vendor="${v}">☁ 저장(공유)</button>
-        <button class="btn secondary" data-action="load-remote" data-vendor="${v}">🔄 최신본 불러오기</button>
-        <button class="btn gray" data-action="download" data-vendor="${v}">⬇ 다운로드</button>
-        <button class="btn gray" data-action="reset" data-vendor="${v}">초기화</button>
+        <button class="btn secondary" data-action="refresh" data-vendor="${v}">🔄 Refresh</button>
       </div>
-      <div class="fileinfo" id="fileinfo-${v}">업로드된 파일이 없습니다.</div>
-      <div class="fileinfo" id="syncstatus-${v}" style="margin-top:2px; margin-bottom:12px;">공유 저장소 확인 중...</div>
-      <div class="tablewrap">
-        <table id="table-${v}">
+      <div class="fileinfo" id="syncstatus-${v}">Checking shared storage...</div>
+      <div class="fileinfo" id="currentinfo-${v}" style="margin-top:4px;"></div>
+      <div class="tablewrap" style="margin-top:12px;">
+        <table>
           <thead>
             <tr>
-              <th style="width:70px;">설비</th>
-              <th style="width:170px;">Alarm Name</th>
-              <th style="width:130px;">위치</th>
-              <th style="width:40px;">Case</th>
-              <th style="width:110px;">Status</th>
-              <th style="width:120px;">Cause</th>
-              <th style="width:100px;">모니터링 유닛</th>
-              <th style="width:220px;">현상 및 원인</th>
-              <th style="width:220px;">조치 내용</th>
-              <th style="width:200px;">Observed Issue / Cause (EN)</th>
-              <th style="width:200px;">Action (EN)</th>
-              <th style="width:70px;">이번주</th>
-              <th style="width:70px;">전체</th>
+              <th style="width:50px;">No.</th>
+              <th>File Name</th>
+              <th style="width:180px;">Upload Time</th>
+              <th style="width:150px;">Action</th>
             </tr>
           </thead>
-          <tbody><tr><td colspan="13" class="empty">파일을 업로드하면 목록이 표시됩니다.</td></tr></tbody>
+          <tbody id="filelist-${v}"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -494,31 +464,32 @@ function vendorPanelHTML(v){
 function dashboardPanelHTML(){
   return `
     <div class="card" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-      <b>업체 선택</b>
+      <b>Select Vendor</b>
       <select class="vendorfilter" id="dashVendorFilter">
-        <option value="ALL">전체</option>
+        <option value="ALL">All</option>
         ${VENDORS.map(v=>`<option value="${v}">${v}</option>`).join('')}
       </select>
-      <button class="btn secondary" id="dashRefresh">새로고침</button>
-      <span class="muted" style="font-size:12px;">업로드된 알람 리스트를 기준으로 금주 현황 · 경향 · 차주 중점 관리 대상을 자동 생성합니다.</span>
+      <button class="btn secondary" id="dashRefresh">Refresh</button>
+      <span class="muted" style="font-size:12px;">Automatically generates this week's status, trends, and next week's focus items based on each vendor's most recently uploaded file.</span>
     </div>
-    <div class="card" id="narrativeBox">데이터를 불러오는 중입니다...</div>
+    <div class="card" id="narrativeBox">Loading data...</div>
     <div class="kpis" id="kpiRow"></div>
-    <div class="grid2">
-      <div class="card"><h3>■ 원인(Cause)별 알람 발생 — Day vs Week</h3><div class="chartbox"><canvas id="chartCause"></canvas></div></div>
-      <div class="card"><h3>■ 원인별 개선 진행 현황 (Improvement Status)</h3><div class="chartbox"><canvas id="chartImprove"></canvas></div></div>
+    <div class="grid3">
+      <div class="card"><h3>■ Alarm Occurrence by Cause — Day vs Week</h3><div class="chartbox"><canvas id="chartCause"></canvas></div></div>
+      <div class="card"><h3>■ This Week's Cause Distribution</h3><div class="chartbox"><canvas id="chartCauseDonut"></canvas></div></div>
+      <div class="card"><h3>■ Improvement Status by Cause</h3><div class="chartbox"><canvas id="chartImprove"></canvas></div></div>
     </div>
     <div class="grid2">
-      <div class="card"><h3>■ 주간 알람 총량 추이 (업로드 이력 기반)</h3><div class="chartbox"><canvas id="chartTrend"></canvas></div></div>
-      <div class="card" id="vendorCompareCard"><h3>■ 업체별 이번주 알람 비교</h3><div class="chartbox"><canvas id="chartVendor"></canvas></div></div>
+      <div class="card"><h3>■ Weekly Alarm Total Trend (Based on Upload History)</h3><div class="chartbox"><canvas id="chartTrend"></canvas></div></div>
+      <div class="card" id="vendorCompareCard"><h3>■ This Week's Alarm Comparison by Vendor</h3><div class="chartbox"><canvas id="chartVendor"></canvas></div></div>
     </div>
     <div class="card">
-      <h3>■ Top 알람 케이스 (이번주)</h3>
+      <h3>■ Top Alarm Cases (This Week)</h3>
       <div id="top5Table"></div>
     </div>
     <div class="card">
-      <h3>■ 차주 중점 관리 대상 알람 (자동 추천)</h3>
-      <p class="muted" style="margin-top:-4px;font-size:12.5px;">이번주 발생 빈도와 현재 조치 상태(진행중 / 모니터링 등)를 기준으로 산정했습니다. 실제 우선순위는 현장 상황에 맞게 조정하세요.</p>
+      <h3>■ Next Week's Focus Alarms (Auto-recommended)</h3>
+      <p class="muted" style="margin-top:-4px;font-size:12.5px;">Priority is calculated based on this week's occurrence frequency and current action status (in-progress/monitoring, etc.), with suggested next actions by status.</p>
       <div id="focusList"></div>
     </div>
   `;
@@ -534,120 +505,133 @@ function switchTab(tab){
   if(tab==='DASH') renderDashboard();
 }
 
-/* ===================== 업체 테이블 렌더링 ===================== */
+/* ===================== Vendor file list rendering ===================== */
 function statusBadge(val){
   if(!val) return '<span class="muted">-</span>';
   const color = STATUS_COLOR[val] || '#9ca3af';
   return `<span class="badge" style="background:${color}">${esc(val)}</span>`;
 }
-function renderVendorTable(vendor){
-  const data = state[vendor];
-  const tbody = document.querySelector(`#table-${vendor} tbody`);
-  if(!data || !data.listRows.length){
-    tbody.innerHTML = `<tr><td colspan="13" class="empty">파일을 업로드하면 목록이 표시됩니다.</td></tr>`;
-    return;
+function renderFileList(vendor){
+  const tbody = document.getElementById(`filelist-${vendor}`);
+  const files = state[vendor].files;
+  if(!files.length){
+    tbody.innerHTML = `<tr><td colspan="4" class="empty">No files uploaded. Please select a file above.</td></tr>`;
+  } else {
+    tbody.innerHTML = files.map((f,i)=>`
+      <tr>
+        <td>${i+1}${i===0?' <span class="tag new">Latest</span>':''}</td>
+        <td>${esc(f.fileName)}</td>
+        <td class="muted">${f.uploadedAt ? f.uploadedAt.toLocaleString('en-US') : '(saving...)'}</td>
+        <td>
+          <button class="btn gray sm" data-action="download-file" data-vendor="${vendor}" data-fileid="${f.id}">Download</button>
+          <button class="btn gray sm" style="color:#dc2626;" data-action="delete-file" data-vendor="${vendor}" data-fileid="${f.id}">Delete</button>
+        </td>
+      </tr>
+    `).join('');
   }
-  tbody.innerHTML = data.listRows.map(row=>{
-    return `<tr>
-      <td>${esc(row.machine)}</td>
-      <td>${esc(row.alarmName)}</td>
-      <td class="muted">${esc(row.location)}</td>
-      <td>${esc(row.caseNo)}</td>
-      <td>${selectHTML(vendor,row.rowNum,'status',STATUS_OPTIONS,row.status)}</td>
-      <td>${selectHTML(vendor,row.rowNum,'cause',CAUSE_OPTIONS,row.cause)}</td>
-      <td><input data-vendor="${vendor}" data-row="${row.rowNum}" data-field="monitoringUnit" value="${esc(row.monitoringUnit)}"></td>
-      <td><textarea data-vendor="${vendor}" data-row="${row.rowNum}" data-field="symptom">${esc(row.symptom)}</textarea></td>
-      <td><textarea data-vendor="${vendor}" data-row="${row.rowNum}" data-field="action">${esc(row.action)}</textarea></td>
-      <td><textarea data-vendor="${vendor}" data-row="${row.rowNum}" data-field="observedIssue">${esc(row.observedIssue)}</textarea></td>
-      <td><textarea data-vendor="${vendor}" data-row="${row.rowNum}" data-field="actionEn">${esc(row.actionEn)}</textarea></td>
-      <td class="num">${num(row.weekSum)}</td>
-      <td class="num">${num(row.totalSum)}</td>
-    </tr>`;
-  }).join('');
-  tbody.querySelectorAll('textarea').forEach(autoGrow);
-}
-function selectHTML(vendor,row,field,options,current){
-  const opts = options.map(o=>`<option value="${esc(o)}" ${o===current?'selected':''}>${o===''?'—':esc(o)}</option>`).join('');
-  return `<select data-vendor="${vendor}" data-row="${row}" data-field="${field}">${opts}</select>`;
-}
-function renderFileInfo(vendor){
-  const data = state[vendor];
-  const el = document.getElementById(`fileinfo-${vendor}`);
-  if(!data){ el.innerHTML = '업로드된 파일이 없습니다.'; return; }
-  const s = data.summary;
-  const weekStr = s ? `${fmtDate(s.weekStart)} ~ ${fmtDate(s.weekEnd)}` : '기간 정보 없음';
-  el.innerHTML = `<b>${esc(data.fileName)}</b>${data.sourceNote?` (${esc(data.sourceNote)})`:''} · 기준 주간: ${weekStr} · 알람 항목 ${data.listRows.length}건`;
-}
-function autoGrow(el){
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 320) + 'px';
-}
-
-/* ===================== 이벤트 바인딩 ===================== */
-function handleTableEdit(e){
-  const t = e.target;
-  if(t.tagName === 'TEXTAREA') autoGrow(t);
-  const vendor = t.dataset.vendor, field = t.dataset.field;
-  const rowNum = parseInt(t.dataset.row, 10);
-  if(!vendor || !field || isNaN(rowNum)) return;
-  const data = state[vendor];
-  if(!data) return;
-  const colIdx = FIELD_COL[field];
-  const addr = XLSX.utils.encode_cell({r:rowNum, c:colIdx});
-  const val = t.value;
-  if(val === ''){ delete data.wsList[addr]; }
-  else { data.wsList[addr] = { t:'s', v: val }; }
-  const rowObj = data.listRows.find(r => r.rowNum === rowNum);
-  if(rowObj) rowObj[field] = val;
-}
-
-function downloadVendor(vendor){
-  const data = state[vendor];
-  if(!data){ alert('먼저 알람 리스트 파일을 업로드하세요.'); return; }
-  const base = data.fileName.replace(/\.xlsx?$/i,'');
-  const outName = `${base}_수정_${todayStr()}.xlsx`;
-  try{
-    XLSX.writeFile(data.workbook, outName);
-  }catch(err){
-    alert('다운로드 중 오류가 발생했습니다: ' + err.message);
-    console.error(err);
+  const info = document.getElementById(`currentinfo-${vendor}`);
+  const cur = state[vendor].current;
+  if(cur){
+    const s = cur.summary;
+    const weekStr = s && s.weekStart ? `${fmtDate(s.weekStart)} ~ ${fmtDate(s.weekEnd)}` : 'No period info';
+    info.innerHTML = `📊 Currently reflected in dashboard: <b>${esc(cur.fileName)}</b> · Reference week: ${weekStr} · ${cur.listRows.length} alarm items`;
+  } else {
+    info.innerHTML = '';
   }
 }
-function resetVendor(vendor){
-  if(!state[vendor]) return;
-  if(!confirm(`${vendor} 업로드 데이터를 초기화할까요? (다운로드하지 않은 수정 내용은 사라집니다)`)) return;
-  state[vendor] = null;
-  document.getElementById(`file-${vendor}`).value = '';
-  renderVendorTable(vendor);
-  renderFileInfo(vendor);
-}
 
+/* ===================== File select (upload) / download / delete ===================== */
 async function handleFileSelect(vendor, file){
   if(!file) return;
+  let wb, data;
   try{
     const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, {type:'array', cellDates:true});
-    const data = parseVendorFile(vendor, wb, file.name);
-    data.sourceNote = '로컬 업로드';
-    renderVendorTable(vendor);
-    renderFileInfo(vendor);
-    renderDashboard();
-    await githubSaveVendorFile(vendor);
+    wb = XLSX.read(buf, {type:'array', cellDates:true});
+    data = parseVendorFile(wb, file.name);
   }catch(err){
-    alert('파일을 읽는 중 문제가 발생했습니다.\n표준 알람 리스트 양식(Summary/list/Alarm 시트)인지 확인해주세요.\n\n오류: ' + err.message);
+    alert('There was a problem reading the file.\nPlease check if it follows the standard alarm list format (Summary/list/Alarm sheets).\n\nError: ' + err.message);
     console.error(err);
+    return;
+  }
+  if(!fbConfigured()){
+    alert('Cannot upload because Firebase is not configured. Please check FIREBASE_CONFIG at the top of the code.');
+    return;
+  }
+  setSyncStatus(vendor, '☁ Uploading...');
+  try{
+    const arr = XLSX.write(wb, {type:'array', bookType:'xlsx'});
+    const base64 = arrayBufferToBase64(arr);
+    await fbUploadFile(vendor, file.name, base64);
+    const input = document.getElementById(`file-${vendor}`);
+    if(input) input.value = '';
+    await refreshVendor(vendor);
+    renderDashboard();
+  }catch(err){
+    console.error(err);
+    setSyncStatus(vendor, '❌ Upload failed: ' + err.message, true);
+  }
+}
+function downloadFile(vendor, fileId){
+  const f = state[vendor].files.find(x=>x.id===fileId);
+  if(!f) return;
+  try{
+    const bytes = base64ToUint8Array(f.base64);
+    const blob = new Blob([bytes], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = f.fileName || `${vendor}.xlsx`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }catch(err){
+    alert('Download error: ' + err.message);
+  }
+}
+async function deleteFile(vendor, fileId){
+  if(!confirm('Delete this file? This cannot be undone.')) return;
+  try{
+    await fbDeleteFile(vendor, fileId);
+    await refreshVendor(vendor);
+    renderDashboard();
+  }catch(err){
+    alert('Delete failed: ' + err.message);
+  }
+}
+async function refreshVendor(vendor){
+  if(!fbConfigured()){
+    setSyncStatus(vendor, '⚠ Firebase is not configured. Please check FIREBASE_CONFIG at the top of the code.', true);
+    return;
+  }
+  setSyncStatus(vendor, '☁ Loading file list...');
+  try{
+    const files = await fbListFiles(vendor);
+    state[vendor].files = files;
+    if(files.length){
+      const latest = files[0];
+      const bytes = base64ToUint8Array(latest.base64);
+      const wb = XLSX.read(bytes, {type:'array', cellDates:true});
+      const data = parseVendorFile(wb, latest.fileName);
+      state[vendor].current = data;
+      saveHistorySnapshot(vendor, data);
+    } else {
+      state[vendor].current = null;
+    }
+    renderFileList(vendor);
+    setSyncStatus(vendor, files.length ? `✅ Up to date (${files.length} files total) · ${new Date().toLocaleTimeString('en-US')}` : 'No files in shared storage. Please upload one first.');
+  }catch(err){
+    console.error(err);
+    setSyncStatus(vendor, '❌ Failed to load: ' + err.message, true);
   }
 }
 
-/* ===================== 대시보드 ===================== */
+/* ===================== Dashboard ===================== */
 function activeVendors(filter){
   const list = filter==='ALL' ? VENDORS : [filter];
-  return list.filter(v => state[v]);
+  return list.filter(v => state[v] && state[v].current);
 }
 function computeWowDelta(vendors){
   const hist = loadHistory();
   let weekTotal = 0;
-  vendors.forEach(v => { weekTotal += state[v]?.summary?.causeWeek?.total || 0; });
+  vendors.forEach(v => { weekTotal += state[v]?.current?.summary?.causeWeek?.total || 0; });
   let prevWeekTotal = 0, haveHist = false;
   vendors.forEach(v=>{
     const h = hist[v];
@@ -663,58 +647,72 @@ function computeWowDelta(vendors){
 function renderKPIs(vendors){
   const box = document.getElementById('kpiRow');
   if(!vendors.length){
-    box.innerHTML = `<div class="kpi"><div class="label">알림</div><div class="value" style="font-size:14px;">업로드된 데이터가 없습니다</div></div>`;
+    box.innerHTML = `<div class="kpi"><div class="label">Notice</div><div class="value" style="font-size:14px;">No data uploaded</div></div>`;
     return;
   }
-  let dayTotal=0, weekTotal=0, weekStart=null, weekEnd=null;
+  let dayTotal=0, weekTotal=0, weekStart=null, weekEnd=null, ongoing=0, monitoring=0;
   vendors.forEach(v=>{
-    const s = state[v].summary;
+    const s = state[v].current.summary;
     if(s?.causeDay?.total) dayTotal += s.causeDay.total;
     if(s?.causeWeek?.total) weekTotal += s.causeWeek.total;
     if(s?.weekStart){ weekStart = s.weekStart; weekEnd = s.weekEnd; }
+    const t = s?.improvement?.totals;
+    if(t){ ongoing += t['On-Going']||0; monitoring += t['Monitoring']||0; }
   });
   const wow = computeWowDelta(vendors);
-  let deltaHTML = '<span class="delta flat">전주 데이터 없음</span>';
+  let deltaHTML = '<span class="delta flat">No previous week data</span>';
   if(wow){
     const cls = wow.diff>0?'up':(wow.diff<0?'down':'flat');
     const arrow = wow.diff>0?'▲':(wow.diff<0?'▼':'-');
-    deltaHTML = `<span class="delta ${cls}">전주 대비 ${arrow} ${Math.abs(wow.pct)}% (${wow.diff>0?'+':''}${wow.diff})</span>`;
+    deltaHTML = `<span class="delta ${cls}">vs last week ${arrow} ${Math.abs(wow.pct)}% (${wow.diff>0?'+':''}${wow.diff})</span>`;
   }
   box.innerHTML = `
-    <div class="kpi"><div class="label">기준 주간</div><div class="value" style="font-size:17px;">${weekStart?`${fmtDate(weekStart)} ~ ${fmtDate(weekEnd)}`:'-'}</div></div>
-    <div class="kpi"><div class="label">최근 1일 알람</div><div class="value">${dayTotal.toLocaleString('ko-KR')}건</div></div>
-    <div class="kpi"><div class="label">이번주 알람 합계</div><div class="value">${weekTotal.toLocaleString('ko-KR')}건</div>${deltaHTML}</div>
-    <div class="kpi"><div class="label">업로드된 업체</div><div class="value" style="font-size:17px;">${vendors.join(', ')}</div></div>
+    <div class="kpi"><div class="label">Reference Week</div><div class="value" style="font-size:17px;">${weekStart?`${fmtDate(weekStart)} ~ ${fmtDate(weekEnd)}`:'-'}</div></div>
+    <div class="kpi"><div class="label">Last 1-Day Alarms</div><div class="value">${dayTotal.toLocaleString('en-US')}</div></div>
+    <div class="kpi"><div class="label">This Week Total Alarms</div><div class="value">${weekTotal.toLocaleString('en-US')}</div>${deltaHTML}</div>
+    <div class="kpi"><div class="label">Incomplete (In-progress + Monitoring)</div><div class="value" style="color:#ea580c;">${(ongoing+monitoring).toLocaleString('en-US')}</div></div>
+    <div class="kpi"><div class="label">Vendors with Data</div><div class="value" style="font-size:17px;">${vendors.join(', ')}</div></div>
   `;
 }
 function destroyChart(id){ if(chartInstances[id]){ chartInstances[id].destroy(); delete chartInstances[id]; } }
 function renderCauseChart(vendors){
-  const causes = ['Equipment','Operator','Material','IT','Process Equipment','Utility','Environment','Unknown'];
-  const dayVals = causes.map(()=>0), weekVals = causes.map(()=>0);
+  const dayVals = CAUSE_LIST.map(()=>0), weekVals = CAUSE_LIST.map(()=>0);
   vendors.forEach(v=>{
-    const s = state[v].summary;
-    (s?.causeDay?.rows||[]).forEach(r=>{ const i=causes.indexOf(r.cause); if(i>=0) dayVals[i]+=r.count; });
-    (s?.causeWeek?.rows||[]).forEach(r=>{ const i=causes.indexOf(r.cause); if(i>=0) weekVals[i]+=r.count; });
+    const s = state[v].current.summary;
+    (s?.causeDay?.rows||[]).forEach(r=>{ const i=CAUSE_LIST.indexOf(r.cause); if(i>=0) dayVals[i]+=r.count; });
+    (s?.causeWeek?.rows||[]).forEach(r=>{ const i=CAUSE_LIST.indexOf(r.cause); if(i>=0) weekVals[i]+=r.count; });
   });
   destroyChart('chartCause');
   chartInstances['chartCause'] = new Chart(document.getElementById('chartCause'), {
     type:'bar',
-    data:{ labels:causes, datasets:[
-      {label:'최근 1일', data:dayVals, backgroundColor:'#93c5fd'},
-      {label:'이번주', data:weekVals, backgroundColor:'#2563eb'}
+    data:{ labels:CAUSE_LIST, datasets:[
+      {label:'Last 1 Day', data:dayVals, backgroundColor:'#93c5fd'},
+      {label:'This Week', data:weekVals, backgroundColor:'#2563eb'}
     ]},
     options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } }
   });
 }
-function renderImproveChart(vendors){
-  const causes = ['Equipment','Operator','Material','IT','Process Equipment','Utility','Environment','Unknown'];
-  const statuses = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
-  const totals = {}; statuses.forEach(s=>totals[s]=causes.map(()=>0));
+function renderCauseDoughnut(vendors){
+  const weekVals = CAUSE_LIST.map(()=>0);
   vendors.forEach(v=>{
-    const imp = state[v].summary?.improvement;
+    const s = state[v].current.summary;
+    (s?.causeWeek?.rows||[]).forEach(r=>{ const i=CAUSE_LIST.indexOf(r.cause); if(i>=0) weekVals[i]+=r.count; });
+  });
+  destroyChart('chartCauseDonut');
+  chartInstances['chartCauseDonut'] = new Chart(document.getElementById('chartCauseDonut'), {
+    type:'doughnut',
+    data:{ labels:CAUSE_LIST, datasets:[{ data:weekVals, backgroundColor:CAUSE_COLORS }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ boxWidth:11, font:{size:10} } } } }
+  });
+}
+function renderImproveChart(vendors){
+  const statuses = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
+  const totals = {}; statuses.forEach(s=>totals[s]=CAUSE_LIST.map(()=>0));
+  vendors.forEach(v=>{
+    const imp = state[v].current.summary?.improvement;
     if(!imp) return;
     imp.rows.forEach(r=>{
-      const ci = causes.indexOf(r.cause);
+      const ci = CAUSE_LIST.indexOf(r.cause);
       if(ci<0) return;
       statuses.forEach(s=>{ totals[s][ci] += (r[s]||0); });
     });
@@ -722,7 +720,7 @@ function renderImproveChart(vendors){
   destroyChart('chartImprove');
   chartInstances['chartImprove'] = new Chart(document.getElementById('chartImprove'), {
     type:'bar',
-    data:{ labels:causes, datasets: statuses.map(s=>({
+    data:{ labels:CAUSE_LIST, datasets: statuses.map(s=>({
       label:s, data:totals[s], backgroundColor: STATUS_COLOR[s] || '#9ca3af'
     })) },
     options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{stacked:true}, y:{stacked:true, beginAtZero:true} } }
@@ -737,7 +735,7 @@ function renderTrendChart(vendors){
   if(!keys.length){
     chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
       type:'line', data:{labels:[], datasets:[]},
-      options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true, text:'주 단위로 파일을 업로드하면 추이가 누적됩니다.'}}}
+      options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true, text:'Upload files weekly to accumulate trend data.'}}}
     });
     return;
   }
@@ -761,31 +759,31 @@ function renderVendorCompareChart(filter, vendors){
   const card = document.getElementById('vendorCompareCard');
   if(filter!=='ALL'){ card.style.display='none'; return; }
   card.style.display='';
-  const labels = vendors, data = vendors.map(v => state[v].summary?.causeWeek?.total ?? 0);
+  const labels = vendors, data = vendors.map(v => state[v].current.summary?.causeWeek?.total ?? 0);
   destroyChart('chartVendor');
   chartInstances['chartVendor'] = new Chart(document.getElementById('chartVendor'), {
     type:'bar',
-    data:{ labels, datasets:[{ label:'이번주 알람 합계', data, backgroundColor: labels.map(v=>VENDOR_COLOR[v]) }] },
+    data:{ labels, datasets:[{ label:'This Week Total Alarms', data, backgroundColor: labels.map(v=>VENDOR_COLOR[v]) }] },
     options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } }
   });
 }
 function renderTop5(vendors){
   let items = [];
   vendors.forEach(v=>{
-    (state[v].summary?.top5Week || []).forEach(r => items.push({vendor:v, ...r}));
+    (state[v].current.summary?.top5Week || []).forEach(r => items.push({vendor:v, ...r}));
   });
   items.sort((a,b) => (b.count||0)-(a.count||0));
   items = items.slice(0,10);
   const el = document.getElementById('top5Table');
-  if(!items.length){ el.innerHTML = '<p class="empty">데이터가 없습니다.</p>'; return; }
-  el.innerHTML = `<table><thead><tr><th>업체</th><th>설비</th><th>Alarm Name</th><th>Case</th><th>이번주 건수</th></tr></thead>
+  if(!items.length){ el.innerHTML = '<p class="empty">No data available.</p>'; return; }
+  el.innerHTML = `<table><thead><tr><th>Vendor</th><th>Machine</th><th>Alarm Name</th><th>Case</th><th>This Week Count</th></tr></thead>
     <tbody>${items.map(i=>`<tr><td><span class="tag">${esc(i.vendor)}</span></td><td>${esc(i.machine)}</td><td>${esc(i.alarmName)}</td><td>${esc(i.caseNo)}</td><td class="num">${num(i.count)}</td></tr>`).join('')}</tbody></table>`;
 }
 function computeFocusList(vendors){
   const STATUS_WEIGHT = {'Unavoidable':0.25, 'Operational':0.15, 'On-going':1.0, 'On-Going':1.0, 'Monitoring':0.7, 'Completed':0.05};
   let items = [];
   vendors.forEach(v=>{
-    (state[v].listRows||[]).forEach(row=>{
+    (state[v].current.listRows||[]).forEach(row=>{
       if(!row.weekSum) return;
       const w = STATUS_WEIGHT[row.status] ?? 0.6;
       const score = row.weekSum * w;
@@ -799,27 +797,28 @@ function computeFocusList(vendors){
 function renderFocusList(vendors){
   const el = document.getElementById('focusList');
   const items = computeFocusList(vendors);
-  if(!items.length){ el.innerHTML = '<p class="empty">추천할 데이터가 없습니다. 알람 리스트를 업로드해주세요.</p>'; return; }
+  if(!items.length){ el.innerHTML = '<p class="empty">No data to recommend. Please upload an alarm list.</p>'; return; }
   el.innerHTML = items.map((it,idx)=>`
     <div class="focusItem">
       <div class="top">
         <span><span class="rank">${idx+1}</span><span class="tag">${esc(it.vendor)}</span>${esc(it.machine)} · Case ${esc(it.caseNo)} · ${esc(it.cause)}</span>
-        <span>${statusBadge(it.status)} &nbsp; 이번주 ${it.weekSum}건</span>
+        <span>${statusBadge(it.status)} &nbsp; This week ${it.weekSum} cases</span>
       </div>
       <div class="desc">${esc((it.symptom||it.alarmName||'').toString().slice(0,180))}</div>
+      <div class="hint">👉 ${ACTION_HINT[it.status] || 'Current status check needed'}</div>
     </div>
   `).join('');
 }
 function renderNarrative(vendors){
   const box = document.getElementById('narrativeBox');
   if(!vendors.length){
-    box.innerHTML = '<span class="muted">업로드된 알람 리스트가 없습니다. 업체 탭에서 파일을 업로드하면 이 자리에 금주 활동 요약과 차주 중점 관리 제안이 자동으로 생성됩니다.</span>';
+    box.innerHTML = '<span class="muted">No alarm lists uploaded. Upload a file in a vendor tab and this week\'s activity summary and next week\'s focus recommendations will be generated here automatically.</span>';
     return;
   }
   let weekStart=null, weekEnd=null, weekTotal=0;
   const causeAgg = {}, impAgg = {};
   vendors.forEach(v=>{
-    const s = state[v].summary;
+    const s = state[v].current.summary;
     if(!s) return;
     if(s.weekStart){ weekStart = s.weekStart; weekEnd = s.weekEnd; }
     weekTotal += s.causeWeek?.total || 0;
@@ -833,27 +832,27 @@ function renderNarrative(vendors){
   const topCauses = Object.entries(causeAgg).filter(([,c])=>c>0).sort((a,b)=>b[1]-a[1]).slice(0,2);
   const wow = computeWowDelta(vendors);
   const wowSentence = wow
-    ? (wow.diff===0 ? '전주와 동일한 수준입니다.' : `전주(${wow.prevWeekTotal}건) 대비 ${Math.abs(wow.pct)}% ${wow.diff>0?'증가':'감소'}했습니다.`)
-    : '전주 비교 데이터는 다음 주 업로드부터 쌓입니다.';
+    ? (wow.diff===0 ? 'This is the same level as last week.' : `This is a ${Math.abs(wow.pct)}% ${wow.diff>0?'increase':'decrease'} compared to last week (${wow.prevWeekTotal} cases).`)
+    : 'Comparison data with last week will start accumulating from next week\'s upload.';
   const causeSentence = topCauses.length
-    ? topCauses.map(([c,cnt])=>`${c}(${cnt}건, ${weekTotal?Math.round(cnt/weekTotal*100):0}%)`).join(', ') + ' 순으로 많았습니다.'
-    : '원인 데이터가 확인되지 않았습니다.';
+    ? topCauses.map(([c,cnt])=>`${c} (${cnt} cases, ${weekTotal?Math.round(cnt/weekTotal*100):0}%)`).join(', ') + ' were the most frequent, in that order.'
+    : 'No cause data was found.';
   let top1 = null;
   vendors.forEach(v=>{
-    (state[v].summary?.top5Week||[]).forEach(r=>{
+    (state[v].current.summary?.top5Week||[]).forEach(r=>{
       if(!top1 || (r.count||0) > (top1.count||0)) top1 = {...r, vendor:v};
     });
   });
-  const topCaseSentence = top1 ? ` 가장 많이 발생한 케이스는 ${esc(top1.vendor)} ${esc(top1.machine)} 설비의 '${esc(top1.alarmName)}'(${top1.count}건)입니다.` : '';
+  const topCaseSentence = top1 ? ` The most frequent case was '${esc(top1.alarmName)}' (${top1.count} cases) on the ${esc(top1.machine)} at ${esc(top1.vendor)}.` : '';
   const ongoing = impAgg['On-Going']||0, monitoring = impAgg['Monitoring']||0, completed = impAgg['Completed']||0;
   const focus = computeFocusList(vendors).slice(0,3);
   const focusSentence = focus.length
-    ? focus.map((it,idx)=>`${idx+1}) ${esc(it.vendor)} ${esc(it.machine)} Case ${esc(it.caseNo)}(${esc(it.cause)}) — 이번주 ${it.weekSum}건, 현재상태 ${esc(it.status||'미기재')}`).join('<br>')
-    : '특별히 우선 확인이 필요한 항목이 식별되지 않았습니다.';
+    ? focus.map((it,idx)=>`${idx+1}) ${esc(it.vendor)} ${esc(it.machine)} Case ${esc(it.caseNo)} (${esc(it.cause)}) — ${it.weekSum} cases this week, current status ${esc(it.status||'Not specified')} → ${ACTION_HINT[it.status] || 'Current status check needed'}`).join('<br>')
+    : 'No items requiring priority attention were identified.';
   box.innerHTML = `
-    <div style="margin-bottom:12px;"><b>📝 금주 활동 요약</b> <span class="muted">(${weekStart?`${fmtDate(weekStart)}~${fmtDate(weekEnd)}`:'기간 미확인'} · ${esc(vendors.join(', '))})</span><br>
-    이번주 알람은 총 <b>${weekTotal.toLocaleString('ko-KR')}건</b> 발생했고, ${wowSentence} 원인별로는 ${causeSentence}${topCaseSentence} 조치 현황은 진행중(On-going) ${ongoing}건, 모니터링 ${monitoring}건, 완료 ${completed}건입니다.</div>
-    <div><b>👉 차주 중점 관리 제안</b><br>${focusSentence}</div>
+    <div style="margin-bottom:12px;"><b>📝 This Week's Activity Summary</b> <span class="muted">(${weekStart?`${fmtDate(weekStart)}~${fmtDate(weekEnd)}`:'Period unknown'} · ${esc(vendors.join(', '))})</span><br>
+    A total of <b>${weekTotal.toLocaleString('en-US')} alarms</b> occurred this week. ${wowSentence} By cause, ${causeSentence}${topCaseSentence} Action status: On-going ${ongoing}, Monitoring ${monitoring}, Completed ${completed}.</div>
+    <div><b>👉 Next Week's Focus Recommendations (Action Items)</b><br>${focusSentence}</div>
   `;
 }
 function renderDashboard(){
@@ -862,21 +861,26 @@ function renderDashboard(){
   renderKPIs(vendors);
   renderNarrative(vendors);
   if(!vendors.length){
-    ['chartCause','chartImprove','chartTrend','chartVendor'].forEach(destroyChart);
-    document.getElementById('top5Table').innerHTML = '<p class="empty">업로드된 알람 리스트가 없습니다. 업체 탭에서 파일을 업로드해주세요.</p>';
+    ['chartCause','chartCauseDonut','chartImprove','chartTrend','chartVendor'].forEach(destroyChart);
+    document.getElementById('top5Table').innerHTML = '<p class="empty">No alarm lists uploaded. Please upload a file in a vendor tab.</p>';
     document.getElementById('focusList').innerHTML = '';
     document.getElementById('vendorCompareCard').style.display = filter==='ALL' ? '' : 'none';
     return;
   }
-  renderCauseChart(vendors);
-  renderImproveChart(vendors);
-  renderTrendChart(filter==='ALL' ? VENDORS : vendors);
-  renderVendorCompareChart(filter, VENDORS.filter(v=>state[v]));
+  try{
+    renderCauseChart(vendors);
+    renderCauseDoughnut(vendors);
+    renderImproveChart(vendors);
+    renderTrendChart(filter==='ALL' ? VENDORS : vendors);
+    renderVendorCompareChart(filter, VENDORS.filter(v=>state[v] && state[v].current));
+  }catch(err){
+    console.error('Chart rendering error (may be a Chart.js loading issue):', err);
+  }
   renderTop5(vendors);
   renderFocusList(vendors);
 }
 
-/* ===================== 초기화 ===================== */
+/* ===================== Initialization ===================== */
 document.addEventListener('DOMContentLoaded', ()=>{
   buildTabsAndPanels();
 
@@ -884,18 +888,15 @@ document.addEventListener('DOMContentLoaded', ()=>{
     document.getElementById(`file-${v}`).addEventListener('change', e=>{
       handleFileSelect(v, e.target.files[0]);
     });
-    document.querySelector(`#table-${v} tbody`).addEventListener('input', handleTableEdit);
-    document.querySelector(`#table-${v} tbody`).addEventListener('change', handleTableEdit);
   });
 
   document.getElementById('panels').addEventListener('click', async e=>{
     const btn = e.target.closest('button[data-action]');
     if(!btn) return;
-    const { action, vendor } = btn.dataset;
-    if(action==='download') downloadVendor(vendor);
-    if(action==='reset') resetVendor(vendor);
-    if(action==='save-remote'){ btn.disabled=true; await githubSaveVendorFile(vendor); btn.disabled=false; renderDashboard(); }
-    if(action==='load-remote'){ btn.disabled=true; await githubLoadVendorFile(vendor); btn.disabled=false; renderDashboard(); }
+    const { action, vendor, fileid } = btn.dataset;
+    if(action==='refresh'){ btn.disabled=true; await refreshVendor(vendor); renderDashboard(); btn.disabled=false; }
+    if(action==='download-file') downloadFile(vendor, fileid);
+    if(action==='delete-file'){ btn.disabled=true; await deleteFile(vendor, fileid); btn.disabled=false; }
   });
 
   document.getElementById('panel-DASH').addEventListener('change', e=>{
@@ -905,16 +906,14 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(e.target.id==='dashRefresh') renderDashboard();
   });
 
-  // 페이지 진입 시 공유 저장소(GitHub)에서 각 업체 최신 파일을 자동으로 불러옵니다.
+  // On page load, automatically fetch each vendor's file list from the shared storage (Firebase).
   (async ()=>{
-    if(!ghConfigured()){
-      VENDORS.forEach(v => setSyncStatus(v, '⚠ GitHub 토큰이 설정되지 않았습니다. 코드 상단 GITHUB_CONFIG.token을 설정해야 공유 저장/자동 불러오기가 동작합니다.', true));
+    if(!fbConfigured()){
+      VENDORS.forEach(v => setSyncStatus(v, '⚠ Firebase is not configured. Set FIREBASE_CONFIG at the top of the code to enable shared storage and auto-loading.', true));
       renderDashboard();
       return;
     }
-    await Promise.all(VENDORS.map(v => githubLoadVendorFile(v, {silent:true}).then(ok=>{
-      if(!ok) setSyncStatus(v, '공유 저장소에 저장된 파일이 없습니다. 먼저 업로드해주세요.');
-    })));
+    await Promise.all(VENDORS.map(v => refreshVendor(v)));
     renderDashboard();
   })();
 });
