@@ -85,6 +85,12 @@
   footer{ text-align:center; color:var(--muted); font-size:11.5px; padding:20px; }
   .tag{ font-size:11px; background:#eef2ff; color:#4338ca; padding:2px 6px; border-radius:4px; font-weight:700; margin-right:6px; }
   .tag.new{ background:#dcfce7; color:#15803d; }
+  .dropzone{ border:2px dashed var(--border); border-radius:8px; padding:22px; text-align:center; color:var(--muted); font-size:13px; cursor:pointer; margin-bottom:10px; transition:background .15s,border-color .15s,color .15s; }
+  .dropzone:hover{ background:#f8faff; }
+  .dropzone.dragover{ background:#eef4ff; border-color:var(--blue); color:var(--blue-d); }
+  .filetype-tag{ display:inline-block; font-size:10.5px; padding:2px 6px; border-radius:4px; font-weight:700; margin-left:6px; }
+  .filetype-tag.dash{ background:#dbeafe; color:#1d4ed8; }
+  .filetype-tag.other{ background:#f3f4f6; color:#4b5563; }
 </style>
 </head>
 <body>
@@ -179,13 +185,16 @@ async function fbListFiles(vendor){
       id: doc.id,
       fileName: d.fileName,
       base64: d.base64,
+      fileType: d.fileType || fileExt(d.fileName),
+      isAlarmData: !!d.isAlarmData,
       uploadedAt: (d.uploadedAt && d.uploadedAt.toDate) ? d.uploadedAt.toDate() : null
     };
   });
 }
-async function fbUploadFile(vendor, fileName, base64){
+async function fbUploadFile(vendor, fileName, base64, fileType, isAlarmData){
   await filesCol(vendor).add({
-    fileName, base64, uploadedAt: firebase.firestore.FieldValue.serverTimestamp()
+    fileName, base64, fileType: fileType || '', isAlarmData: !!isAlarmData,
+    uploadedAt: firebase.firestore.FieldValue.serverTimestamp()
   });
 }
 async function fbDeleteFile(vendor, fileId){
@@ -225,6 +234,14 @@ function esc(s){
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 function num(v){ return (typeof v === 'number') ? v.toLocaleString('en-US') : (v ?? '-'); }
+function fileExt(name){ const m = /\.([a-z0-9]+)$/i.exec(name||''); return m ? m[1].toLowerCase() : ''; }
+function fileTypeIcon(ext){
+  if(['xlsx','xls'].includes(ext)) return '📊';
+  if(['pptx','ppt'].includes(ext)) return '📽️';
+  if(['docx','doc'].includes(ext)) return '📄';
+  if(ext==='pdf') return '📕';
+  return '📁';
+}
 
 function parseCauseTable(ws, titleSubstr){
   const title = findCell(ws, v=> typeof v==='string' && v.includes(titleSubstr));
@@ -434,12 +451,16 @@ function buildTabsAndPanels(){
 function vendorPanelHTML(v){
   return `
     <div class="card guide">
-      <b>How to use</b> — Uploading an alarm list (.xlsx) adds a new entry to the shared storage (existing files are not deleted and keep accumulating as history). The most recently uploaded file is automatically reflected in the dashboard.
+      <b>How to use</b> — Drag &amp; drop files below (or click to browse) to add them to the shared storage. You can select/drop multiple files at once, and existing files are never deleted — everything keeps accumulating as history. Alarm list Excel files (.xlsx) are automatically parsed, and the most recently uploaded valid alarm list is reflected in the dashboard. Other file types (PPT, Word, PDF, etc.) are stored for shared reference only and are not used in the dashboard.
       <b>Anyone who opens this link can view and upload to the same list, so please share the link only with internal stakeholders.</b>
     </div>
     <div class="card">
+      <div class="dropzone" id="dropzone-${v}">
+        📥 Drag &amp; drop files here, or click to choose files (multiple files allowed)<br>
+        <span class="muted" style="font-size:11.5px;">.xlsx alarm lists update the dashboard · other files (pptx, docx, pdf, etc.) are stored for reference only</span>
+      </div>
+      <input type="file" id="file-${v}" accept=".xlsx,.xls,.pptx,.ppt,.docx,.doc,.pdf" multiple style="display:none;">
       <div class="toolbar">
-        <input type="file" id="file-${v}" accept=".xlsx,.xls">
         <button class="btn secondary" data-action="refresh" data-vendor="${v}">🔄 Refresh</button>
       </div>
       <div class="fileinfo" id="syncstatus-${v}">Checking shared storage...</div>
@@ -514,20 +535,27 @@ function statusBadge(val){
 function renderFileList(vendor){
   const tbody = document.getElementById(`filelist-${vendor}`);
   const files = state[vendor].files;
+  const curId = state[vendor].current?.fileId;
   if(!files.length){
-    tbody.innerHTML = `<tr><td colspan="4" class="empty">No files uploaded. Please select a file above.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="empty">No files uploaded. Drag &amp; drop a file above to get started.</td></tr>`;
   } else {
-    tbody.innerHTML = files.map((f,i)=>`
+    tbody.innerHTML = files.map((f,i)=>{
+      const icon = fileTypeIcon(f.fileType);
+      const isDashCurrent = curId && f.id === curId;
+      const tag = isDashCurrent
+        ? '<span class="filetype-tag dash">📊 Dashboard</span>'
+        : (f.isAlarmData ? '<span class="filetype-tag dash">Alarm Data</span>' : `<span class="filetype-tag other">${esc((f.fileType||'file').toUpperCase())}</span>`);
+      return `
       <tr>
-        <td>${i+1}${i===0?' <span class="tag new">Latest</span>':''}</td>
-        <td>${esc(f.fileName)}</td>
+        <td>${i+1}</td>
+        <td>${icon} ${esc(f.fileName)} ${tag}</td>
         <td class="muted">${f.uploadedAt ? f.uploadedAt.toLocaleString('en-US') : '(saving...)'}</td>
         <td>
           <button class="btn gray sm" data-action="download-file" data-vendor="${vendor}" data-fileid="${f.id}">Download</button>
           <button class="btn gray sm" style="color:#dc2626;" data-action="delete-file" data-vendor="${vendor}" data-fileid="${f.id}">Delete</button>
         </td>
       </tr>
-    `).join('');
+    `;}).join('');
   }
   const info = document.getElementById(`currentinfo-${vendor}`);
   const cur = state[vendor].current;
@@ -536,39 +564,56 @@ function renderFileList(vendor){
     const weekStr = s && s.weekStart ? `${fmtDate(s.weekStart)} ~ ${fmtDate(s.weekEnd)}` : 'No period info';
     info.innerHTML = `📊 Currently reflected in dashboard: <b>${esc(cur.fileName)}</b> · Reference week: ${weekStr} · ${cur.listRows.length} alarm items`;
   } else {
-    info.innerHTML = '';
+    info.innerHTML = files.length ? '<span class="muted">No valid alarm list (.xlsx) found among the uploaded files yet — the dashboard has no data to show.</span>' : '';
   }
 }
 
 /* ===================== File select (upload) / download / delete ===================== */
-async function handleFileSelect(vendor, file){
-  if(!file) return;
-  let wb, data;
-  try{
-    const buf = await file.arrayBuffer();
-    wb = XLSX.read(buf, {type:'array', cellDates:true});
-    data = parseVendorFile(wb, file.name);
-  }catch(err){
-    alert('There was a problem reading the file.\nPlease check if it follows the standard alarm list format (Summary/list/Alarm sheets).\n\nError: ' + err.message);
-    console.error(err);
-    return;
-  }
+async function handleFilesSelect(vendor, fileList){
+  const files = Array.from(fileList || []);
+  if(!files.length) return;
   if(!fbConfigured()){
     alert('Cannot upload because Firebase is not configured. Please check FIREBASE_CONFIG at the top of the code.');
     return;
   }
-  setSyncStatus(vendor, '☁ Uploading...');
-  try{
-    const arr = XLSX.write(wb, {type:'array', bookType:'xlsx'});
-    const base64 = arrayBufferToBase64(arr);
-    await fbUploadFile(vendor, file.name, base64);
-    const input = document.getElementById(`file-${vendor}`);
-    if(input) input.value = '';
-    await refreshVendor(vendor);
-    renderDashboard();
-  }catch(err){
-    console.error(err);
-    setSyncStatus(vendor, '❌ Upload failed: ' + err.message, true);
+  let ok = 0, fail = 0, skippedFormat = 0;
+  for(let i=0;i<files.length;i++){
+    const file = files[i];
+    setSyncStatus(vendor, `☁ Uploading ${i+1}/${files.length}: ${file.name}...`);
+    try{
+      const ext = fileExt(file.name);
+      const isSpreadsheet = ['xlsx','xls'].includes(ext);
+      let isAlarmData = false;
+      const buf = await file.arrayBuffer();
+      // Always upload the original file bytes as-is (never re-serialize via XLSX.write,
+      // which strips styles/formatting/merges). XLSX.read below is only used to validate
+      // the format and extract dashboard data — the parsed workbook is not what gets stored.
+      if(isSpreadsheet){
+        try{
+          const wb = XLSX.read(buf, {type:'array', cellDates:true});
+          parseVendorFile(wb, file.name); // validate standard alarm list format (throws if not)
+          isAlarmData = true;
+        }catch(e){
+          isAlarmData = false; // xlsx but not a recognized alarm list — still stored as a plain reference file
+          skippedFormat++;
+        }
+      }
+      const base64 = arrayBufferToBase64(buf);
+      await fbUploadFile(vendor, file.name, base64, ext, isAlarmData);
+      ok++;
+    }catch(err){
+      console.error(err);
+      fail++;
+    }
+  }
+  const input = document.getElementById(`file-${vendor}`);
+  if(input) input.value = '';
+  await refreshVendor(vendor);
+  renderDashboard();
+  if(fail){
+    setSyncStatus(vendor, `⚠ ${ok} uploaded, ${fail} failed`, true);
+  } else if(skippedFormat){
+    setSyncStatus(vendor, `✅ ${ok} file(s) uploaded (${skippedFormat} not in standard alarm list format — stored as reference only)`);
   }
 }
 function downloadFile(vendor, fileId){
@@ -576,7 +621,7 @@ function downloadFile(vendor, fileId){
   if(!f) return;
   try{
     const bytes = base64ToUint8Array(f.base64);
-    const blob = new Blob([bytes], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const blob = new Blob([bytes], {type:'application/octet-stream'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = f.fileName || `${vendor}.xlsx`;
@@ -605,11 +650,12 @@ async function refreshVendor(vendor){
   try{
     const files = await fbListFiles(vendor);
     state[vendor].files = files;
-    if(files.length){
-      const latest = files[0];
-      const bytes = base64ToUint8Array(latest.base64);
+    const latestAlarm = files.find(f => f.isAlarmData);
+    if(latestAlarm){
+      const bytes = base64ToUint8Array(latestAlarm.base64);
       const wb = XLSX.read(bytes, {type:'array', cellDates:true});
-      const data = parseVendorFile(wb, latest.fileName);
+      const data = parseVendorFile(wb, latestAlarm.fileName);
+      data.fileId = latestAlarm.id;
       state[vendor].current = data;
       saveHistorySnapshot(vendor, data);
     } else {
@@ -804,7 +850,7 @@ function renderFocusList(vendors){
         <span><span class="rank">${idx+1}</span><span class="tag">${esc(it.vendor)}</span>${esc(it.machine)} · Case ${esc(it.caseNo)} · ${esc(it.cause)}</span>
         <span>${statusBadge(it.status)} &nbsp; This week ${it.weekSum} cases</span>
       </div>
-      <div class="desc">${esc((it.symptom||it.alarmName||'').toString().slice(0,180))}</div>
+      <div class="desc">${esc((it.observedIssue||it.symptom||it.alarmName||'').toString().slice(0,180))}</div>
       <div class="hint">👉 ${ACTION_HINT[it.status] || 'Current status check needed'}</div>
     </div>
   `).join('');
@@ -885,8 +931,22 @@ document.addEventListener('DOMContentLoaded', ()=>{
   buildTabsAndPanels();
 
   VENDORS.forEach(v=>{
-    document.getElementById(`file-${v}`).addEventListener('change', e=>{
-      handleFileSelect(v, e.target.files[0]);
+    const input = document.getElementById(`file-${v}`);
+    const dz = document.getElementById(`dropzone-${v}`);
+    input.addEventListener('change', e=>{
+      handleFilesSelect(v, e.target.files);
+    });
+    dz.addEventListener('click', ()=> input.click());
+    ['dragenter','dragover'].forEach(evt=>{
+      dz.addEventListener(evt, e=>{ e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover'); });
+    });
+    ['dragleave','dragend'].forEach(evt=>{
+      dz.addEventListener(evt, e=>{ e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover'); });
+    });
+    dz.addEventListener('drop', e=>{
+      e.preventDefault(); e.stopPropagation();
+      dz.classList.remove('dragover');
+      handleFilesSelect(v, e.dataTransfer.files);
     });
   });
 
