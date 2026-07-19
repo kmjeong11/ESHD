@@ -427,10 +427,16 @@ async function fbUploadFile(vendor, fileName, base64, fileType, isAlarmData){
     await ref.collection('chunks').doc(String(i)).set({ i, s: chunks[i] });
   }
 }
-async function fbDeleteFile(vendor, fileId){
-  // Remove chunk subdocuments first, then the metadata doc.
-  const chunksSnap = await filesCol(vendor).doc(fileId).collection('chunks').get();
-  for(const d of chunksSnap.docs) await d.ref.delete();
+async function fbDeleteFile(vendor, fileId, chunkCount){
+  // Only touch the chunks subcollection when the file actually used chunks. For inline
+  // files (chunkCount 0), querying the subcollection would be denied by a non-recursive
+  // Firestore rule and make the whole delete fail.
+  if(chunkCount > 0){
+    try{
+      const chunksSnap = await filesCol(vendor).doc(fileId).collection('chunks').get();
+      for(const d of chunksSnap.docs) await d.ref.delete();
+    }catch(e){ console.warn('chunk cleanup skipped:', e.message); }
+  }
   await filesCol(vendor).doc(fileId).delete();
 }
 
@@ -828,25 +834,27 @@ function dashboardPanelHTML(){
         ${VENDORS.map(v=>`<option value="${v}">${v}</option>`).join('')}
       </select>
       <button class="btn secondary" id="dashRefresh">Refresh</button>
-      <span class="muted" style="font-size:12px;">Drag across the daily chart below to set the analysis period. All widgets update for the selected range.</span>
+      <span class="muted" style="font-size:12px;">Pick a start/end date below, or drag across the daily chart, to set the analysis period.</span>
     </div>
     <div class="card">
       <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <span>■ Daily Alarm Count — <span style="color:#1d4ed8;">drag to select a period</span></span>
-        <span style="font-weight:600;font-size:12.5px;">Selected: <span id="rangeLabel" style="color:#1d4ed8;">All</span>
-          <button class="btn gray sm" id="rangeReset" style="margin-left:6px;">Reset</button></span>
+        <span>■ Daily Alarm Count</span>
+        <span style="font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          From <select id="rangeStart" class="vendorfilter" style="padding:4px 6px;"></select>
+          To <select id="rangeEnd" class="vendorfilter" style="padding:4px 6px;"></select>
+          <button class="btn gray sm" id="rangeReset">Reset (All)</button>
+        </span>
       </h3>
+      <p class="muted" style="margin-top:-4px;font-size:11.5px;">Selected period: <span id="rangeLabel" style="color:#1d4ed8;font-weight:700;">All</span> · you can also drag across the bars.</p>
       <div class="chartbox" style="height:200px;"><canvas id="chartDaily"></canvas></div>
     </div>
     <div class="card" id="narrativeBox">Loading data...</div>
     <div class="kpis" id="kpiRow"></div>
-    <div class="grid3">
+    <div class="grid2">
       <div class="card"><h3>■ Alarm Occurrence by Cause (selected period)</h3>
         <p class="muted" style="margin-top:-6px;font-size:11.5px;">Click a bar to see where (locations) that cause occurred.</p>
-        <div class="chartbox"><canvas id="chartCause"></canvas></div></div>
-      <div class="card"><h3>■ Cause Share (selected period)</h3>
-        <p class="muted" style="margin-top:-6px;font-size:11.5px;">Click a bar for the location breakdown.</p>
-        <div class="chartbox"><canvas id="chartCauseBar"></canvas></div></div>
+        <div class="chartbox"><canvas id="chartCause"></canvas></div>
+        <div id="causePct" style="margin-top:8px;line-height:1.9;"></div></div>
       <div class="card"><h3>■ Improvement Status by Cause</h3><div class="chartbox"><canvas id="chartImprove"></canvas></div></div>
     </div>
     <div class="card" id="locationReportCard" style="display:none;">
@@ -929,6 +937,16 @@ function renderFileList(vendor){
 }
 
 /* ===================== File select (upload) / download / delete ===================== */
+const uploadingVendors = new Set();
+// Keep only the newest stored file for each filename (re-uploading replaces, never duplicates).
+async function dedupeVendorFiles(vendor){
+  const files = await fbListFiles(vendor); // newest first
+  const seen = new Set(); const toDelete = [];
+  files.forEach(f=>{ if(seen.has(f.fileName)) toDelete.push(f); else seen.add(f.fileName); });
+  for(const f of toDelete){
+    try{ await fbDeleteFile(vendor, f.id, f.chunkCount); }catch(e){ console.warn('dedupe delete failed', e); }
+  }
+}
 async function handleFilesSelect(vendor, fileList){
   const files = Array.from(fileList || []);
   if(!files.length) return;
@@ -936,6 +954,9 @@ async function handleFilesSelect(vendor, fileList){
     alert('Cannot upload because Firebase is not configured. Please check FIREBASE_CONFIG at the top of the code.');
     return;
   }
+  if(uploadingVendors.has(vendor)) return;   // guard against duplicate/overlapping uploads
+  uploadingVendors.add(vendor);
+  try{
   let ok = 0, fail = 0, skippedFormat = 0, tooLarge = 0;
   for(let i=0;i<files.length;i++){
     const file = files[i];
@@ -973,6 +994,7 @@ async function handleFilesSelect(vendor, fileList){
   }
   const input = document.getElementById(`file-${vendor}`);
   if(input) input.value = '';
+  if(ok) { try{ await dedupeVendorFiles(vendor); }catch(e){ console.warn(e); } }
   await refreshVendor(vendor);
   renderDashboard();
   if(tooLarge){
@@ -983,6 +1005,9 @@ async function handleFilesSelect(vendor, fileList){
     setSyncStatus(vendor, `⚠ ${ok} uploaded, ${fail} failed${tooLarge?`, ${tooLarge} too large`:''}`, true);
   } else if(skippedFormat || tooLarge){
     setSyncStatus(vendor, `✅ ${ok} file(s) uploaded${skippedFormat?` (${skippedFormat} not in standard alarm list format — stored as reference only)`:''}${tooLarge?` · ${tooLarge} skipped (too large)`:''}`, tooLarge>0 && ok===0);
+  }
+  }finally{
+    uploadingVendors.delete(vendor);
   }
 }
 async function downloadFile(vendor, fileId){
@@ -1007,11 +1032,13 @@ async function downloadFile(vendor, fileId){
 }
 async function deleteFile(vendor, fileId){
   if(!confirm('Delete this file? This cannot be undone.')) return;
+  const f = state[vendor].files.find(x=>x.id===fileId);
   try{
-    await fbDeleteFile(vendor, fileId);
+    await fbDeleteFile(vendor, fileId, f ? f.chunkCount : 0);
     await refreshVendor(vendor);
     renderDashboard();
   }catch(err){
+    console.error(err);
     alert('Delete failed: ' + err.message);
   }
 }
@@ -1081,7 +1108,7 @@ function getSelectedRange(vendors){
 function computeRangeStats(vendors, start, end){
   const inRange = d => (!start || d>=start) && (!end || d<=end);
   let total = 0;
-  const byCause = {}, locByCause = {}, statusByCause = {}, rows = [], dailyMap = {};
+  const byCause = {}, locByCause = {}, unspecByCause = {}, statusByCause = {}, rows = [], dailyMap = {};
   vendors.forEach(v=>{
     (state[v].current.listRows||[]).forEach(row=>{
       let sum = 0; const locs = [];
@@ -1097,10 +1124,10 @@ function computeRangeStats(vendors, start, end){
       if(sum>0){
         const cause = row.cause || 'Unknown';
         byCause[cause] = (byCause[cause]||0) + sum;
-        const lo = (locByCause[cause] = locByCause[cause] || {});
+        const lo = (locByCause[cause] = locByCause[cause] || {}); // real locations only
         locs.forEach(l=>{ lo[l] = (lo[l]||0) + 1; });
-        const unspec = sum - locs.length;
-        if(unspec>0) lo['(unspecified)'] = (lo['(unspecified)']||0) + unspec;
+        const unspec = sum - locs.length;   // occurrences with no recorded location
+        if(unspec>0) unspecByCause[cause] = (unspecByCause[cause]||0) + unspec;
         const st = normalizeStatus(row.status);
         if(st){ statusByCause[cause] = statusByCause[cause] || {}; statusByCause[cause][st] = (statusByCause[cause][st]||0) + 1; }
         rows.push({ vendor:v, row, sum });
@@ -1108,7 +1135,7 @@ function computeRangeStats(vendors, start, end){
     });
   });
   const dailyTotals = Object.values(dailyMap).sort((a,b)=>a.date-b.date);
-  return { total, byCause, locByCause, statusByCause, rows, dailyTotals, start, end };
+  return { total, byCause, locByCause, unspecByCause, statusByCause, rows, dailyTotals, start, end };
 }
 // Total for the equally-long window immediately preceding [start,end] (for the delta KPI).
 function prevPeriodTotal(vendors, start, end){
@@ -1185,6 +1212,7 @@ function renderCauseCharts(vendors, stats){
     .concat(Object.keys(stats.byCause).filter(c=>!CAUSE_LIST.includes(c) && stats.byCause[c]>0));
   const labels = present, vals = present.map(c=>stats.byCause[c]);
   const colors = present.map(causeColor);
+  const total = vals.reduce((a,b)=>a+b,0) || 1;
   const clickHandler = (evt, els)=>{ if(els.length){ showLocationReport(labels[els[0].index]); } };
 
   destroyChart('chartCause');
@@ -1192,19 +1220,20 @@ function renderCauseCharts(vendors, stats){
     type:'bar',
     data:{ labels, datasets:[{ label:'Alarms', data:vals, backgroundColor:colors }] },
     options:{ responsive:true, maintainAspectRatio:false, onClick:clickHandler,
-      plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true } } }
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:(it)=>`${it.parsed.y} alarms (${Math.round(it.parsed.y/total*100)}%)` } } },
+      scales:{ y:{ beginAtZero:true } } }
   });
 
-  // Second "cause share" chart as a horizontal bar (replaces the old doughnut).
-  const total = vals.reduce((a,b)=>a+b,0) || 1;
-  destroyChart('chartCauseBar');
-  chartInstances['chartCauseBar'] = new Chart(document.getElementById('chartCauseBar'), {
-    type:'bar',
-    data:{ labels, datasets:[{ label:'Share %', data:present.map(c=>Math.round(stats.byCause[c]/total*100)), backgroundColor:colors }] },
-    options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, onClick:clickHandler,
-      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:(it)=>`${it.parsed.x}%  (${stats.byCause[labels[it.dataIndex]]} alarms)` } } },
-      scales:{ x:{ beginAtZero:true, max:100 } } }
-  });
+  // Per-cause percentage breakdown (replaces the old horizontal share chart).
+  const pctEl = document.getElementById('causePct');
+  if(pctEl){
+    const sorted = present.map(c=>[c, stats.byCause[c]]).sort((a,b)=>b[1]-a[1]);
+    pctEl.innerHTML = sorted.map(([c,n])=>
+      `<span style="display:inline-block;margin:2px 8px 2px 0;font-size:12px;">
+         <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${causeColor(c)};margin-right:4px;vertical-align:middle;"></span>
+         ${esc(c)} <b>${Math.round(n/total*100)}%</b> <span class="muted">(${n})</span></span>`
+    ).join('');
+  }
 }
 
 function renderImproveChart(vendors, stats){
@@ -1223,13 +1252,19 @@ function renderImproveChart(vendors, stats){
 function showLocationReport(cause){
   if(!lastStats) return;
   const locObj = lastStats.locByCause[cause] || {};
-  // Each row: [unitId(full location), machineCode(prefix), machineName, count]
-  const rows = Object.entries(locObj)
-    .map(([loc,count])=>{
-      if(loc === '(unspecified)') return [loc, '', '(no location recorded)', count];
-      return [loc, machinePrefix(loc), machineName(loc), count];
-    })
-    .sort((a,b)=>b[3]-a[3]);
+  const unspec = lastStats.unspecByCause?.[cause] || 0;
+  // Rows: [unitId(full location), machineCode(prefix), machineName, count]
+  const realEntries = Object.entries(locObj);
+  let rows, note = '';
+  if(realEntries.length){
+    // We have recorded locations → show them. Occurrences with no location are excluded
+    // (they came from dates before location logging started) with a footnote.
+    rows = realEntries.map(([loc,count])=>[loc, machinePrefix(loc), machineName(loc), count]).sort((a,b)=>b[3]-a[3]);
+    if(unspec>0) note = `${unspec} occurrence(s) in this period had no recorded location and are excluded from the table.`;
+  } else {
+    // No recorded locations in this period at all → show a single unspecified row.
+    rows = unspec>0 ? [['(unspecified)','','(no location recorded)',unspec]] : [];
+  }
   const rangeLabel = (lastStats.start && lastStats.end) ? `${fmtDate(lastStats.start)} ~ ${fmtDate(lastStats.end)}` : 'All';
   lastLocReport = { cause, rangeLabel, rows };
   const card = document.getElementById('locationReportCard');
@@ -1239,7 +1274,7 @@ function showLocationReport(cause){
     body.innerHTML = '<p class="empty">No location data for this cause in the selected period.</p>';
   } else {
     const total = rows.reduce((a,r)=>a+r[3],0);
-    body.innerHTML = `<div class="tablewrap" style="max-height:360px;"><table>
+    body.innerHTML = `${note?`<p class="muted" style="margin-top:0;font-size:12px;">ℹ ${esc(note)}</p>`:''}<div class="tablewrap" style="max-height:360px;"><table>
       <thead><tr><th style="width:44px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th style="width:90px;">Count</th><th style="width:80px;">Share</th></tr></thead>
       <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td class="num">${r[3]}</td><td class="num">${Math.round(r[3]/total*100)}%</td></tr>`).join('')}
       <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="3">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
@@ -1401,15 +1436,42 @@ function renderNarrative(vendors, stats, range){
     <div><b>👉 Focus Recommendations (Action Items)</b><br>${focusSentence}</div>
   `;
 }
+// Populate the From/To date dropdowns from the available data dates.
+function renderDateSelectors(){
+  const selS = document.getElementById('rangeStart'), selE = document.getElementById('rangeEnd');
+  if(!selS || !selE) return;
+  const opts = dashDates.map((d,i)=>`<option value="${i}">${fmtDate(d)}</option>`).join('');
+  selS.innerHTML = opts; selE.innerHTML = opts;
+  if(dashDates.length){
+    let a = 0, b = dashDates.length-1;
+    if(dashState.start) a = dashDates.findIndex(d=>sameDay(d,dashState.start));
+    if(dashState.end)   b = dashDates.findIndex(d=>sameDay(d,dashState.end));
+    if(a<0) a=0; if(b<0) b=dashDates.length-1;
+    selS.value = String(a); selE.value = String(b);
+  }
+}
+function applyDateSelectors(){
+  const selS = document.getElementById('rangeStart'), selE = document.getElementById('rangeEnd');
+  if(!selS || !selE || !dashDates.length) return;
+  let a = parseInt(selS.value,10), b = parseInt(selE.value,10);
+  if(isNaN(a)||isNaN(b)) return;
+  if(a>b){ const t=a; a=b; b=t; }   // keep start <= end
+  dashState = { start: dashDates[a], end: dashDates[b] };
+  const vendors = activeVendors(document.getElementById('dashVendorFilter')?.value || 'ALL');
+  renderDailyChart(vendors);
+  renderDashboardBody();
+}
 function renderDashboardBody(){
   const filter = document.getElementById('dashVendorFilter')?.value || 'ALL';
   const vendors = activeVendors(filter);
+  renderDateSelectors();
   if(!vendors.length){
     renderKPIs(vendors, {total:0,statusByCause:{}}, {start:null,end:null});
     renderNarrative(vendors);
-    ['chartCause','chartCauseBar','chartImprove','chartTrend','chartVendor'].forEach(destroyChart);
+    ['chartCause','chartImprove','chartTrend','chartVendor'].forEach(destroyChart);
     document.getElementById('top5Table').innerHTML = '<p class="empty">No alarm lists uploaded. Please upload a file in a vendor tab.</p>';
     document.getElementById('focusList').innerHTML = '';
+    const cp = document.getElementById('causePct'); if(cp) cp.innerHTML='';
     document.getElementById('locationReportCard').style.display = 'none';
     document.getElementById('vendorCompareCard').style.display = filter==='ALL' ? '' : 'none';
     document.getElementById('rangeLabel').textContent = 'All';
@@ -1483,6 +1545,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   document.getElementById('panel-DASH').addEventListener('change', e=>{
     if(e.target.id==='dashVendorFilter'){ dashState={start:null,end:null}; renderDashboard(); }
+    if(e.target.id==='rangeStart' || e.target.id==='rangeEnd'){ applyDateSelectors(); }
   });
   document.getElementById('panel-DASH').addEventListener('click', e=>{
     if(e.target.id==='dashRefresh'){ renderDashboard(); }
