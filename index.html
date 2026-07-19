@@ -125,12 +125,152 @@ const ACTION_HINT = {
   'Operational': 'Re-verify whether this is a normal operational alarm',
   'Completed': 'Only check for recurrence'
 };
+/* ===================== Unit ID → Machine name map (from ESHD FA Machine EMS ID) =====================
+   A location code like "J1ESTO21201-101" is matched by its front part only (everything
+   before the last "-"), e.g. "J1ESTO21201" → "Mixer Stocker #1". */
+const MACHINE_MAP = {
+  "J1AAGV14301":"(N) Assembly AGV",
+  "J1AAGV14302":"(S) Assembly AGV",
+  "J1ACNV12101":"Before NND Conveyor",
+  "J1ACNV12201":"Before NND Conveyor",
+  "J1ACNV13101":"(S) Before LNS Conveyor",
+  "J1ACNV13201":"(N) Before LNS Conveyor",
+  "J1ACNV13301":"Bridge Conveyor",
+  "J1ACNV14301":"(N) After LNS Conveyor",
+  "J1ACNV14302":"(S) After LNS Conveyor",
+  "J1ACNV14303":"(N) Before PKG Conveyor",
+  "J1ACNV14304":"(S) Before PKG Conveyor",
+  "J1AOHS13101":"After NND OHS",
+  "J1AOHS13102":"(S) Before LNS OHS",
+  "J1AOHS13201":"After NND OHS",
+  "J1AOHS13202":"(N) Before LNS OHS",
+  "J1AOHS14301":"(N) LNS-PKG OHS #1",
+  "J1AOHS14302":"(N) LNS-PKG OHS #2",
+  "J1AOHS14303":"(S) LNS-PKG OHS #1",
+  "J1AOHS14304":"(S) LNS-PKG OHS #2",
+  "J1ASTO12101":"R/P-NND Stocker #1",
+  "J1ASTO12102":"R/P-NND Stocker #2",
+  "J1ASTO12103":"R/P-NND Stocker #3",
+  "J1ASTO12201":"R/P-NND Stocker #1",
+  "J1ASTO12202":"R/P-NND Stocker #2",
+  "J1ASTO12203":"R/P-NND Stocker #3",
+  "J1ASTO13101":"NND-LNS Stocker #1",
+  "J1ASTO13102":"NND-LNS Stocker #2",
+  "J1ASTO13201":"NND-LNS Stocker #1",
+  "J1ASTO13202":"NND-LNS Stocker #2",
+  "J1EAGV21101":"Mixer AGV",
+  "J1EAGV21201":"Mixer AGV",
+  "J1ECNV13101":"JumboRoll Conveyor",
+  "J1ECNV13201":"JumboRoll Conveyor",
+  "J1ECNV21101":"Mixer Conveyor",
+  "J1ECNV21201":"Mixer Conveyor",
+  "J1EDDA12101":"Coater AGV",
+  "J1EDDA12201":"Coater AGV",
+  "J1EDDA13101":"Before R/P AGV",
+  "J1EDDA13201":"Before R/P AGV",
+  "J1EOHS13101":"JumboRoll OHS",
+  "J1EOHS13201":"JumboRoll OHS",
+  "J1ESTO12101":"Foil Stocker",
+  "J1ESTO12201":"Foil Stocker",
+  "J1ESTO13101":"JumboRoll Stocker #1",
+  "J1ESTO13102":"JumboRoll Stocker #2",
+  "J1ESTO13201":"JumboRoll Stocker #1",
+  "J1ESTO13202":"JumboRoll Stocker #2",
+  "J1ESTO21101":"Mixer Stocker #1",
+  "J1ESTO21102":"Mixer Stocker #2",
+  "J1ESTO21201":"Mixer Stocker #1",
+  "J1ESTO21202":"Mixer Stocker #2",
+  "J1FCNV11301":"(N) PKG-PRE Conveyor",
+  "J1FCNV11302":"(N) J/F Conveyor",
+  "J1FCNV11303":"(N) NTA-HTA Conveyor",
+  "J1FCNV11304":"(N) Degas Loader Conveyor",
+  "J1FCNV12301":"(N) Degas Unloader Conveyor",
+  "J1FCNV12302":"(N) CDC Conveyor",
+  "J1FCNV12303":"(N) SHA Conveyor #1",
+  "J1FCNV12304":"(N) SHA Conveyor #2",
+  "J1FCNV12305":"(N) SHA-EOL Conveyor #1",
+  "J1FCNV12306":"(N) SHA-EOL Conveyor #2",
+  "J1FCNV12307":"(N) SHA-EOL Conveyor #3",
+  "J1FCNV13301":"(N) EOL-PLT Conveyor",
+  "J1FCNV13302":"(N) PLT Cleaner Conveyor",
+  "J1FSTO11301":"(N) Pre Aging Stocker #1",
+  "J1FSTO11302":"(N) Pre Aging Stocker #2",
+  "J1FSTO11303":"(N) Pre Aging Stocker #3",
+  "J1FSTO11304":"(N) Pre Aging Stocker #4",
+  "J1FSTO11305":"(N) J/F Stocker #1",
+  "J1FSTO11306":"(N) J/F Stocker #2",
+  "J1FSTO11307":"(N) J/F Stocker #3",
+  "J1FSTO11308":"(N) J/F Stocker #4",
+  "J1FSTO11309":"(N) J/F Stocker #5",
+  "J1FSTO11310":"(N) J/F Stocker #6",
+  "J1FSTO11311":"(N) High Temp Aging Stocker #1",
+  "J1FSTO11312":"(N) High Temp Aging Stocker #2",
+  "J1FSTO11313":"(N) High Temp Aging Stocker #3",
+  "J1FSTO11314":"(N) High Temp Aging Stocker #4",
+  "J1FSTO11315":"(N) Normal Temp Aging Stocker #1",
+  "J1FSTO11316":"(N) Normal Temp Aging Stocker #2",
+  "J1FSTO11317":"(N) Normal Temp Aging Stocker #3",
+  "J1FSTO11318":"(N) Normal Temp Aging Stocker #4",
+  "J1FSTO11319":"(N) Normal Temp Aging Stocker #5",
+  "J1FSTO11320":"(N) Normal Temp Aging Stocker #6",
+  "J1FSTO12301":"(N) CDC Stocker #1",
+  "J1FSTO12302":"(N) CDC Stocker #2",
+  "J1FSTO12303":"(N) CDC Stocker #3",
+  "J1FSTO12304":"(N) CDC Stocker #4",
+  "J1FSTO12305":"(N) CDC Stocker #5",
+  "J1FSTO12306":"(N) CDC Stocker #6",
+  "J1FSTO12307":"(N) Shipment Aging Stocker #1",
+  "J1FSTO12308":"(N) Shipment Aging Stocker #2",
+  "J1FSTO12309":"(N) Shipment Aging Stocker #3",
+  "J1FSTO12310":"(N) Shipment Aging Stocker #4",
+  "J1FSTO12311":"(N) Shipment Aging Stocker #5",
+  "J1FSTO12312":"(N) Shipment Aging Stocker #6",
+  "J1FSTO12313":"(N) Shipment Aging Stocker #7",
+  "J1FSTO12314":"(N) Shipment Aging Stocker #8",
+  "J1FSTO12315":"(N) Shipment Aging Stocker #9",
+  "J1FSTO12316":"(N) Shipment Aging Stocker #10",
+  "J1FSTO12317":"(N) Shipment Aging Stocker #11",
+  "J1FSTO12318":"(N) Shipment Aging Stocker #12",
+  "J1FSTO12319":"(N) Shipment Aging Stocker #13",
+  "J1FSTO12320":"(N) Shipment Aging Stocker #14",
+  "J1FSTO12321":"(N) Shipment Aging Stocker #15",
+  "J1FSTO12322":"(N) Shipment Aging Stocker #16",
+  "J1FSTO12323":"(N) Shipment Aging Stocker #17",
+  "J1FSTO12324":"(N) Shipment Aging Stocker #18",
+  "J1FSTO12325":"(N) Shipment Aging Stocker #19",
+  "J1FSTO12326":"(N) Shipment Aging Stocker #20",
+  "J1FSTO12327":"(N) Shipment Aging Stocker #21",
+  "J1FSTO12328":"(N) Shipment Aging Stocker #22",
+  "J1FSTO12329":"(N) Shipment Aging Stocker #23",
+  "J1FSTO12330":"(N) Shipment Aging Stocker #24",
+  "J1FSTO13301":"(N) Cell PLT Stocker #1",
+  "J1FSTO13302":"(N) Cell PLT Stocker #2",
+  "J1FSTO13303":"(N) Cell PLT Stocker #3",
+  "J1FSTO13304":"(N) Cell PLT Stocker #4",
+  "J1FSTO13305":"(N) Cell PLT Stocker #5",
+  "J1FSTO13306":"(N) Cell PLT Stocker #6",
+  "J1PSTO13301":"(N) Cell PLT Stocker #7",
+  "J1PSTO13302":"(N) Cell PLT Stocker #8",
+  "J1PSTO13303":"(N) Cell PLT Stocker #9"
+};
+// Front part of a location code (everything before the last "-"): J1ESTO21201-101 → J1ESTO21201
+function machinePrefix(loc){
+  if(!loc) return '';
+  const s = String(loc).trim();
+  const i = s.lastIndexOf('-');
+  return i>0 ? s.slice(0,i) : s;
+}
+function machineName(loc){
+  return MACHINE_MAP[machinePrefix(loc)] || '(unknown)';
+}
+
 const HISTORY_KEY = 'alarmTool_history_v2';
 // Firestore caps each document at ~1MB. To store larger files on the free plan we split
 // the base64 into chunks across multiple documents (a 'chunks' subcollection) and
 // reassemble them on download. This raises the practical per-file limit well beyond 1MB.
 const MAX_FILE_BYTES = 25 * 1024 * 1024;   // 25 MB per file
 const CHUNK_CHARS = 700 * 1024;            // base64 chars per Firestore chunk doc (~700KB, safely under 1MB)
+const INLINE_MAX = 900 * 1024;             // files whose base64 is <= this are stored inline in one doc
 
 const state = {};
 VENDORS.forEach(v => state[v] = { files: [], current: null });
@@ -265,6 +405,17 @@ async function fbGetFileBase64(vendor, file){
   return snap.docs.map(d => d.data().s).join('');
 }
 async function fbUploadFile(vendor, fileName, base64, fileType, isAlarmData){
+  // Small files (nearly all alarm .xlsx) are stored INLINE in the single metadata document.
+  // This keeps normal uploads working even if the Firestore rules only cover /files/{id}
+  // (no recursive subcollection rule). Only genuinely large files use the chunks subcollection.
+  if(base64.length <= INLINE_MAX){
+    await filesCol(vendor).add({
+      fileName, fileType: fileType || '', isAlarmData: !!isAlarmData,
+      base64, size: base64.length, chunkCount: 0,
+      uploadedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    return;
+  }
   const chunks = [];
   for(let i=0; i<base64.length; i+=CHUNK_CHARS) chunks.push(base64.slice(i, i+CHUNK_CHARS));
   const ref = await filesCol(vendor).add({
@@ -1072,7 +1223,13 @@ function renderImproveChart(vendors, stats){
 function showLocationReport(cause){
   if(!lastStats) return;
   const locObj = lastStats.locByCause[cause] || {};
-  const rows = Object.entries(locObj).sort((a,b)=>b[1]-a[1]);
+  // Each row: [unitId(full location), machineCode(prefix), machineName, count]
+  const rows = Object.entries(locObj)
+    .map(([loc,count])=>{
+      if(loc === '(unspecified)') return [loc, '', '(no location recorded)', count];
+      return [loc, machinePrefix(loc), machineName(loc), count];
+    })
+    .sort((a,b)=>b[3]-a[3]);
   const rangeLabel = (lastStats.start && lastStats.end) ? `${fmtDate(lastStats.start)} ~ ${fmtDate(lastStats.end)}` : 'All';
   lastLocReport = { cause, rangeLabel, rows };
   const card = document.getElementById('locationReportCard');
@@ -1081,11 +1238,11 @@ function showLocationReport(cause){
   if(!rows.length){
     body.innerHTML = '<p class="empty">No location data for this cause in the selected period.</p>';
   } else {
-    const total = rows.reduce((a,r)=>a+r[1],0);
-    body.innerHTML = `<div class="tablewrap" style="max-height:340px;"><table>
-      <thead><tr><th style="width:50px;">No.</th><th>Location</th><th style="width:110px;">Count</th><th style="width:90px;">Share</th></tr></thead>
-      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td class="num">${r[1]}</td><td class="num">${Math.round(r[1]/total*100)}%</td></tr>`).join('')}
-      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td>Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
+    const total = rows.reduce((a,r)=>a+r[3],0);
+    body.innerHTML = `<div class="tablewrap" style="max-height:360px;"><table>
+      <thead><tr><th style="width:44px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th style="width:90px;">Count</th><th style="width:80px;">Share</th></tr></thead>
+      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td class="num">${r[3]}</td><td class="num">${Math.round(r[3]/total*100)}%</td></tr>`).join('')}
+      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="3">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
   }
   card.style.display = '';
   card.scrollIntoView({ behavior:'smooth', block:'nearest' });
@@ -1097,7 +1254,8 @@ function locReportFilenameBase(){
 }
 function exportLocReportCsv(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
-  const lines = [['Location','Count'], ...lastLocReport.rows.map(r=>[r[0], r[1]])];
+  const header = ['Unit ID','Machine Code','Machine Name','Alarm Count'];
+  const lines = [header, ...lastLocReport.rows];
   const csv = '﻿' + lines.map(row=>row.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
   const url = URL.createObjectURL(blob);
@@ -1106,8 +1264,13 @@ function exportLocReportCsv(){
 }
 function exportLocReportXlsx(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
-  const aoa = [['Cause', lastLocReport.cause], ['Period', lastLocReport.rangeLabel], [], ['Location','Count'], ...lastLocReport.rows];
+  const aoa = [
+    ['Cause', lastLocReport.cause], ['Period', lastLocReport.rangeLabel], [],
+    ['Unit ID','Machine Code','Machine Name','Alarm Count'],
+    ...lastLocReport.rows
+  ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{wch:22},{wch:16},{wch:32},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Location Report');
   XLSX.writeFile(wb, locReportFilenameBase()+'.xlsx');
