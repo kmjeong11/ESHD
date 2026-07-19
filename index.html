@@ -1256,14 +1256,15 @@ function showLocationReport(cause){
   // Rows: [unitId(full location), machineCode(prefix), machineName, count]
   const realEntries = Object.entries(locObj);
   let rows, note = '';
+  // Each row: [unitId, machineCode, machineName, cause, count]
   if(realEntries.length){
     // We have recorded locations → show them. Occurrences with no location are excluded
     // (they came from dates before location logging started) with a footnote.
-    rows = realEntries.map(([loc,count])=>[loc, machinePrefix(loc), machineName(loc), count]).sort((a,b)=>b[3]-a[3]);
+    rows = realEntries.map(([loc,count])=>[loc, machinePrefix(loc), machineName(loc), cause, count]).sort((a,b)=>b[4]-a[4]);
     if(unspec>0) note = `${unspec} occurrence(s) in this period had no recorded location and are excluded from the table.`;
   } else {
     // No recorded locations in this period at all → show a single unspecified row.
-    rows = unspec>0 ? [['(unspecified)','','(no location recorded)',unspec]] : [];
+    rows = unspec>0 ? [['(unspecified)','','(no location recorded)',cause,unspec]] : [];
   }
   const rangeLabel = (lastStats.start && lastStats.end) ? `${fmtDate(lastStats.start)} ~ ${fmtDate(lastStats.end)}` : 'All';
   lastLocReport = { cause, rangeLabel, rows };
@@ -1273,11 +1274,11 @@ function showLocationReport(cause){
   if(!rows.length){
     body.innerHTML = '<p class="empty">No location data for this cause in the selected period.</p>';
   } else {
-    const total = rows.reduce((a,r)=>a+r[3],0);
+    const total = rows.reduce((a,r)=>a+r[4],0);
     body.innerHTML = `${note?`<p class="muted" style="margin-top:0;font-size:12px;">ℹ ${esc(note)}</p>`:''}<div class="tablewrap" style="max-height:360px;"><table>
-      <thead><tr><th style="width:44px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th style="width:90px;">Count</th><th style="width:80px;">Share</th></tr></thead>
-      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td class="num">${r[3]}</td><td class="num">${Math.round(r[3]/total*100)}%</td></tr>`).join('')}
-      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="3">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
+      <thead><tr><th style="width:44px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th>Cause</th><th style="width:90px;">Count</th><th style="width:80px;">Share</th></tr></thead>
+      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td class="num">${r[4]}</td><td class="num">${Math.round(r[4]/total*100)}%</td></tr>`).join('')}
+      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="4">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
   }
   card.style.display = '';
   card.scrollIntoView({ behavior:'smooth', block:'nearest' });
@@ -1289,7 +1290,7 @@ function locReportFilenameBase(){
 }
 function exportLocReportCsv(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
-  const header = ['Unit ID','Machine Code','Machine Name','Alarm Count'];
+  const header = ['Unit ID','Machine Code','Machine Name','Cause','Alarm Count'];
   const lines = [header, ...lastLocReport.rows];
   const csv = '﻿' + lines.map(row=>row.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
@@ -1301,11 +1302,11 @@ function exportLocReportXlsx(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
   const aoa = [
     ['Cause', lastLocReport.cause], ['Period', lastLocReport.rangeLabel], [],
-    ['Unit ID','Machine Code','Machine Name','Alarm Count'],
+    ['Unit ID','Machine Code','Machine Name','Cause','Alarm Count'],
     ...lastLocReport.rows
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{wch:22},{wch:16},{wch:32},{wch:12}];
+  ws['!cols'] = [{wch:22},{wch:16},{wch:32},{wch:18},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Location Report');
   XLSX.writeFile(wb, locReportFilenameBase()+'.xlsx');
