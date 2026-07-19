@@ -126,13 +126,71 @@ const ACTION_HINT = {
   'Completed': 'Only check for recurrence'
 };
 const HISTORY_KEY = 'alarmTool_history_v2';
-// Firestore caps each document at 1MB. Files are stored as base64 (~1.33x larger)
-// inside a Firestore doc, so keep raw file size well under that ceiling.
-const MAX_FILE_BYTES = 650 * 1024;
+// Firestore caps each document at ~1MB. To store larger files on the free plan we split
+// the base64 into chunks across multiple documents (a 'chunks' subcollection) and
+// reassemble them on download. This raises the practical per-file limit well beyond 1MB.
+const MAX_FILE_BYTES = 25 * 1024 * 1024;   // 25 MB per file
+const CHUNK_CHARS = 700 * 1024;            // base64 chars per Firestore chunk doc (~700KB, safely under 1MB)
 
 const state = {};
 VENDORS.forEach(v => state[v] = { files: [], current: null });
 const chartInstances = {};
+
+// Chart.js plugin: draws the translucent selection rectangle on the daily chart while
+// the user drags. Only acts on a chart that has a `$brush` property set.
+if(window.Chart){
+  Chart.register({
+    id: 'brushOverlay',
+    afterDraw(chart){
+      const b = chart.$brush;
+      if(!b) return;
+      const { ctx, chartArea, scales } = chart;
+      const x = scales.x;
+      const n = chart.data.labels.length || 1;
+      const band = (chartArea.right - chartArea.left) / n;
+      const left = x.getPixelForValue(b.a) - band/2;
+      const right = x.getPixelForValue(b.b) + band/2;
+      ctx.save();
+      ctx.fillStyle = 'rgba(37,99,235,0.15)';
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 1;
+      ctx.fillRect(left, chartArea.top, right-left, chartArea.bottom-chartArea.top);
+      ctx.strokeRect(left, chartArea.top, right-left, chartArea.bottom-chartArea.top);
+      ctx.restore();
+    }
+  });
+}
+// Wire drag selection on the persistent #chartDaily canvas (attached once). Reads the
+// live chart from chartInstances at event time and updates dashState on drag end.
+function setupDailyChartDrag(){
+  const canvas = document.getElementById('chartDaily');
+  if(!canvas) return;
+  let dragStart = null;
+  const idxAt = (chart, clientX)=>{
+    const rect = chart.canvas.getBoundingClientRect();
+    let i = Math.round(chart.scales.x.getValueForPixel(clientX - rect.left));
+    return Math.max(0, Math.min(chart.data.labels.length-1, i));
+  };
+  canvas.addEventListener('mousedown', e=>{
+    const chart = chartInstances['chartDaily']; if(!chart || !dashDates.length) return;
+    dragStart = idxAt(chart, e.clientX);
+    chart.$brush = { a:dragStart, b:dragStart }; chart.update('none');
+  });
+  canvas.addEventListener('mousemove', e=>{
+    const chart = chartInstances['chartDaily']; if(!chart || dragStart==null) return;
+    const j = idxAt(chart, e.clientX);
+    chart.$brush = { a:Math.min(dragStart,j), b:Math.max(dragStart,j) }; chart.update('none');
+  });
+  document.addEventListener('mouseup', e=>{
+    const chart = chartInstances['chartDaily']; if(!chart || dragStart==null) return;
+    const j = idxAt(chart, e.clientX);
+    const a = Math.min(dragStart,j), b = Math.max(dragStart,j);
+    dragStart = null;
+    dashState = { start: dashDates[a], end: dashDates[b] };
+    renderDailyChart(activeVendors(document.getElementById('dashVendorFilter')?.value || 'ALL'));
+    renderDashboardBody();
+  });
+}
 
 /* ===================== Firebase shared storage setup =====================
    Uploaded files are stored in Firestore (vendors/{vendor}/files/{fileId}).
@@ -179,7 +237,10 @@ function setSyncStatus(vendor, text, isError){
   if(el){ el.textContent = text; el.style.color = isError ? '#dc2626' : '#6b7280'; }
 }
 
-/* ===================== Firestore file list / upload / delete ===================== */
+/* ===================== Firestore file list / upload / download / delete =====================
+   Files are stored as: a metadata document in vendors/{vendor}/files/{id} (no file bytes),
+   plus the base64 content split across vendors/{vendor}/files/{id}/chunks/{index}.
+   Older files may still carry an inline `base64` field — both layouts are supported. */
 async function fbListFiles(vendor){
   const snap = await filesCol(vendor).orderBy('uploadedAt','desc').get();
   return snap.docs.map(doc=>{
@@ -187,20 +248,38 @@ async function fbListFiles(vendor){
     return {
       id: doc.id,
       fileName: d.fileName,
-      base64: d.base64,
+      base64Inline: d.base64 || null,   // legacy single-document storage
+      chunkCount: d.chunkCount || 0,
+      size: d.size || 0,
       fileType: d.fileType || fileExt(d.fileName),
       isAlarmData: !!d.isAlarmData,
       uploadedAt: (d.uploadedAt && d.uploadedAt.toDate) ? d.uploadedAt.toDate() : null
     };
   });
 }
+// Fetch the full base64 for a file only when needed (download, or parsing the current
+// dashboard file) — keeps the file-list load fast even with large files.
+async function fbGetFileBase64(vendor, file){
+  if(file.base64Inline) return file.base64Inline;
+  const snap = await filesCol(vendor).doc(file.id).collection('chunks').orderBy('i').get();
+  return snap.docs.map(d => d.data().s).join('');
+}
 async function fbUploadFile(vendor, fileName, base64, fileType, isAlarmData){
-  await filesCol(vendor).add({
-    fileName, base64, fileType: fileType || '', isAlarmData: !!isAlarmData,
+  const chunks = [];
+  for(let i=0; i<base64.length; i+=CHUNK_CHARS) chunks.push(base64.slice(i, i+CHUNK_CHARS));
+  const ref = await filesCol(vendor).add({
+    fileName, fileType: fileType || '', isAlarmData: !!isAlarmData,
+    size: base64.length, chunkCount: chunks.length,
     uploadedAt: firebase.firestore.FieldValue.serverTimestamp()
   });
+  for(let i=0; i<chunks.length; i++){
+    await ref.collection('chunks').doc(String(i)).set({ i, s: chunks[i] });
+  }
 }
 async function fbDeleteFile(vendor, fileId){
+  // Remove chunk subdocuments first, then the metadata doc.
+  const chunksSnap = await filesCol(vendor).doc(fileId).collection('chunks').get();
+  for(const d of chunksSnap.docs) await d.ref.delete();
   await filesCol(vendor).doc(fileId).delete();
 }
 
@@ -411,15 +490,17 @@ function parseListSheet(ws, weekStart, weekEnd){
     return fill;
   }
   const fillMachine = buildFill(2), fillAlarmName = buildFill(3), fillDailyCount = buildFill(4), fillLocation = buildFill(5);
+  // Detect date columns. In the newer format each date column is followed by a paired
+  // 'Location' column holding newline-separated equipment locations (one per occurrence).
   const dateCols = [];
   for(let c=14; c<=range.e.c; c++){
     const d = toExcelDate(cellAt(ws,1,c));
-    if(d) dateCols.push({col:c, date:d, hasData: colHasData(ws, c, range.e.r)});
+    if(d){
+      const nextHdr = cellAt(ws,1,c+1)?.v;
+      const locCol = (typeof nextHdr === 'string' && /location/i.test(nextHdr)) ? c+1 : null;
+      dateCols.push({ col:c, date:d, locCol, hasData: colHasData(ws, c, range.e.r) });
+    }
   }
-  // The "Day" = the latest date column that actually contains data (ignore empty
-  // pre-created future-date columns).
-  let dayColIdx = null, dayColDate = null;
-  dateCols.forEach(dc=>{ if(dc.hasData && (!dayColDate || dc.date>dayColDate)){ dayColDate = dc.date; dayColIdx = dc.col; } });
   const rows = [];
   for(let r=2; r<=range.e.r; r++){
     const code = cellAt(ws,r,1)?.v;
@@ -432,13 +513,22 @@ function parseListSheet(ws, weekStart, weekEnd){
     const observedIssue = cellAt(ws,r,12)?.v;
     const actionEn = cellAt(ws,r,13)?.v;
     if([code,status,caseNo,cause,monitoringUnit,symptom,action,observedIssue,actionEn].every(v=>v===undefined)) continue;
-    let weekSum=0, totalSum=0, daySum=0;
+    // Per-day breakdown with locations.
+    const daily = [];
+    let totalSum = 0;
     dateCols.forEach(dc=>{
       const val = cellAt(ws,r,dc.col)?.v;
-      if(typeof val === 'number'){
-        totalSum += val;
-        if(weekStart && weekEnd && dc.date>=weekStart && dc.date<=weekEnd) weekSum += val;
-        if(dc.col === dayColIdx) daySum += val;
+      const cnt = (typeof val === 'number') ? val : 0;
+      let locs = [];
+      if(dc.locCol){
+        const lv = cellAt(ws,r,dc.locCol)?.v;
+        if(lv!==undefined && lv!==null && String(lv).trim()!==''){
+          locs = String(lv).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+        }
+      }
+      if(cnt>0 || locs.length){
+        daily.push({ date: dc.date, count: cnt>0 ? cnt : locs.length, locations: locs });
+        totalSum += (cnt>0 ? cnt : locs.length);
       }
     });
     rows.push({
@@ -449,7 +539,7 @@ function parseListSheet(ws, weekStart, weekEnd){
       dailyCount: cellAt(ws,r,4)?.v ?? fillDailyCount[r],
       location: cellAt(ws,r,5)?.v ?? fillLocation[r],
       status, caseNo, cause, monitoringUnit, symptom, action, observedIssue, actionEn,
-      weekSum, totalSum, daySum
+      daily, totalSum
     });
   }
   return { rows, dateCols };
@@ -471,57 +561,20 @@ function normalizeStatus(s){
   if(low==='operational') return 'Operational';
   return String(s).trim();
 }
-function buildSummaryFromList(listRows, dateCols, weekStart, weekEnd){
-  const KNOWN_STATUS = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
-  const causeWeekMap = {}, causeDayMap = {}, impMap = {};
-  let weekTotal = 0, dayTotal = 0;
-  listRows.forEach(row=>{
-    const cause = row.cause;
-    const wk = row.weekSum || 0, dy = row.daySum || 0;
-    if(cause){
-      causeWeekMap[cause] = (causeWeekMap[cause]||0) + wk;
-      causeDayMap[cause]  = (causeDayMap[cause]||0)  + dy;
-    }
-    weekTotal += wk; dayTotal += dy;
-    // Improvement status: count alarm cases (rows) per cause × status.
-    if(cause && row.status){
-      const st = normalizeStatus(row.status);
-      if(st){ impMap[cause] = impMap[cause] || {}; impMap[cause][st] = (impMap[cause][st]||0) + 1; }
-    }
-  });
-  const causeWeek = { rows: Object.entries(causeWeekMap).filter(([,c])=>c>0).map(([cause,count])=>({cause,count})), total: weekTotal };
-  const causeDay  = { rows: Object.entries(causeDayMap).filter(([,c])=>c>0).map(([cause,count])=>({cause,count})), total: dayTotal };
-  const impRows = Object.entries(impMap).map(([cause,st])=>({cause, ...st}));
-  const impTotals = {};
-  KNOWN_STATUS.forEach(s=>{ impTotals[s] = impRows.reduce((a,r)=>a+(r[s]||0),0); });
-  const improvement = { statusNames: KNOWN_STATUS, rows: impRows, totals: impTotals };
-  const top5Week = listRows.filter(r=>(r.weekSum||0)>0).sort((a,b)=>b.weekSum-a.weekSum).slice(0,5)
-    .map(r=>({ machine:r.machine, alarmName:r.alarmName, caseNo:r.caseNo, count:r.weekSum }));
-  const top5Day = listRows.filter(r=>(r.daySum||0)>0).sort((a,b)=>b.daySum-a.daySum).slice(0,5)
-    .map(r=>({ machine:r.machine, alarmName:r.alarmName, caseNo:r.caseNo, count:r.daySum }));
-  return { dayDate: weekEnd, weekStart, weekEnd, causeDay, causeWeek, top5Day, top5Week, improvement };
-}
-
 /* ===================== File parsing (workbook -> data for UI/dashboard) ===================== */
 function parseVendorFile(wb, fileName){
   const wsList = wb.Sheets['list'];
   if(!wsList) throw new Error("Could not find the 'list' sheet. Please check if this is a standard alarm list format (Summary/list/Alarm).");
-  // Derive the week range from the list sheet's real date columns (the Summary sheet's
-  // dates are volatile =TODAY() formulas with no cached value, so they can't be read here).
-  const range = decodeRef(wsList);
-  const listDates = [];
-  for(let c=14; c<=range.e.c; c++){
-    const d = toExcelDate(cellAt(wsList,1,c));
-    if(d && colHasData(wsList, c, range.e.r)) listDates.push(d); // ignore empty future-date columns
-  }
-  let weekStart=null, weekEnd=null;
-  if(listDates.length){
-    weekEnd = new Date(Math.max(...listDates.map(d=>d.getTime())));
-    weekStart = new Date(weekEnd); weekStart.setDate(weekStart.getDate()-6);
-  }
-  const { rows: listRows, dateCols } = parseListSheet(wsList, weekStart, weekEnd);
+  const { rows: listRows, dateCols } = parseListSheet(wsList);
   if(!listRows.length) throw new Error("The 'list' sheet has no alarm rows.");
-  const summary = buildSummaryFromList(listRows, dateCols, weekStart, weekEnd);
+  // Overall data date range = min/max of dates that actually have alarms.
+  let dataStart=null, dataEnd=null, total=0;
+  listRows.forEach(r => r.daily.forEach(e=>{
+    total += e.count;
+    if(!dataStart || e.date<dataStart) dataStart = e.date;
+    if(!dataEnd || e.date>dataEnd) dataEnd = e.date;
+  }));
+  const summary = { dataStart, dataEnd, total };
   return { fileName, summary, summaryError: null, listRows, dateCols };
 }
 
@@ -530,23 +583,20 @@ function loadHistory(){
   try{ return JSON.parse(localStorage.getItem(HISTORY_KEY)) || {}; }catch(e){ return {}; }
 }
 function saveHistorySnapshot(vendor, data){
-  if(!data.summary || !data.summary.weekStart || !data.summary.weekEnd) return;
+  const s = data.summary;
+  if(!s || !s.dataStart || !s.dataEnd) return;
   const hist = loadHistory();
   if(!hist[vendor]) hist[vendor] = [];
-  const weekKey = fmtDateFull(data.summary.weekStart) + '_' + fmtDateFull(data.summary.weekEnd);
+  const weekKey = fmtDateFull(s.dataStart) + '_' + fmtDateFull(s.dataEnd);
   const snapshot = {
     weekKey,
-    weekStart: data.summary.weekStart,
-    weekEnd: data.summary.weekEnd,
-    dayDate: data.summary.dayDate,
-    dayTotal: data.summary.causeDay?.total ?? null,
-    weekTotal: data.summary.causeWeek?.total ?? null,
-    causeWeek: data.summary.causeWeek?.rows ?? [],
-    improvementTotals: data.summary.improvement?.totals ?? null,
+    weekStart: s.dataStart,
+    weekEnd: s.dataEnd,
+    weekTotal: s.total ?? null,
     savedAt: new Date().toISOString(),
     fileName: data.fileName
   };
-  hist[vendor] = hist[vendor].filter(s => s.weekKey !== weekKey);
+  hist[vendor] = hist[vendor].filter(x => x.weekKey !== weekKey);
   hist[vendor].push(snapshot);
   hist[vendor].sort((a,b) => new Date(a.weekStart) - new Date(b.weekStart));
   if(hist[vendor].length > 24) hist[vendor] = hist[vendor].slice(-24);
@@ -587,13 +637,13 @@ function vendorPanelHTML(v){
   return `
     <div class="card guide">
       <b>How to use</b> — Drag &amp; drop files below (or click to browse) to add them to the shared storage. You can select/drop multiple files at once, and existing files are never deleted — everything keeps accumulating as history. Alarm list Excel files (.xlsx) are automatically parsed, and the most recently uploaded valid alarm list is reflected in the dashboard. Other file types (PPT, Word, PDF, etc.) are stored for shared reference only and are not used in the dashboard.
-      <b>File size limit: each file must be under ~650KB on the current free plan</b> (larger PPT/Word/PDF files will be skipped — ask if you need support for bigger files).
+      <b>File size limit: up to 25MB per file</b> (large files are split into chunks in the shared storage automatically).
       <b>Anyone who opens this link can view and upload to the same list, so please share the link only with internal stakeholders.</b>
     </div>
     <div class="card">
       <div class="dropzone" id="dropzone-${v}">
         📥 Drag &amp; drop files here, or click to choose files (multiple files allowed)<br>
-        <span class="muted" style="font-size:11.5px;">.xlsx alarm lists update the dashboard · other files (pptx, docx, pdf, etc.) are stored for reference only · max ~650KB per file</span>
+        <span class="muted" style="font-size:11.5px;">.xlsx alarm lists update the dashboard · other files (pptx, docx, pdf, etc.) are stored for reference only · up to 25MB per file</span>
       </div>
       <input type="file" id="file-${v}" accept=".xlsx,.xls,.pptx,.ppt,.docx,.doc,.pdf" multiple style="display:none;">
       <div class="toolbar">
@@ -627,26 +677,49 @@ function dashboardPanelHTML(){
         ${VENDORS.map(v=>`<option value="${v}">${v}</option>`).join('')}
       </select>
       <button class="btn secondary" id="dashRefresh">Refresh</button>
-      <span class="muted" style="font-size:12px;">Automatically generates this week's status, trends, and next week's focus items based on each vendor's most recently uploaded file.</span>
+      <span class="muted" style="font-size:12px;">Drag across the daily chart below to set the analysis period. All widgets update for the selected range.</span>
+    </div>
+    <div class="card">
+      <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <span>■ Daily Alarm Count — <span style="color:#1d4ed8;">drag to select a period</span></span>
+        <span style="font-weight:600;font-size:12.5px;">Selected: <span id="rangeLabel" style="color:#1d4ed8;">All</span>
+          <button class="btn gray sm" id="rangeReset" style="margin-left:6px;">Reset</button></span>
+      </h3>
+      <div class="chartbox" style="height:200px;"><canvas id="chartDaily"></canvas></div>
     </div>
     <div class="card" id="narrativeBox">Loading data...</div>
     <div class="kpis" id="kpiRow"></div>
     <div class="grid3">
-      <div class="card"><h3>■ Alarm Occurrence by Cause — Day vs Week</h3><div class="chartbox"><canvas id="chartCause"></canvas></div></div>
-      <div class="card"><h3>■ This Week's Cause Distribution</h3><div class="chartbox"><canvas id="chartCauseDonut"></canvas></div></div>
+      <div class="card"><h3>■ Alarm Occurrence by Cause (selected period)</h3>
+        <p class="muted" style="margin-top:-6px;font-size:11.5px;">Click a bar to see where (locations) that cause occurred.</p>
+        <div class="chartbox"><canvas id="chartCause"></canvas></div></div>
+      <div class="card"><h3>■ Cause Share (selected period)</h3>
+        <p class="muted" style="margin-top:-6px;font-size:11.5px;">Click a bar for the location breakdown.</p>
+        <div class="chartbox"><canvas id="chartCauseBar"></canvas></div></div>
       <div class="card"><h3>■ Improvement Status by Cause</h3><div class="chartbox"><canvas id="chartImprove"></canvas></div></div>
+    </div>
+    <div class="card" id="locationReportCard" style="display:none;">
+      <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <span id="locReportTitle">■ Location Report</span>
+        <span>
+          <button class="btn secondary sm" id="locExportCsv">⬇ CSV</button>
+          <button class="btn secondary sm" id="locExportXlsx">⬇ Excel</button>
+          <button class="btn gray sm" id="locReportClose">✕ Close</button>
+        </span>
+      </h3>
+      <div id="locReportBody"></div>
     </div>
     <div class="grid2">
       <div class="card"><h3>■ Weekly Alarm Total Trend (Based on Upload History)</h3><div class="chartbox"><canvas id="chartTrend"></canvas></div></div>
-      <div class="card" id="vendorCompareCard"><h3>■ This Week's Alarm Comparison by Vendor</h3><div class="chartbox"><canvas id="chartVendor"></canvas></div></div>
+      <div class="card" id="vendorCompareCard"><h3>■ Alarm Comparison by Vendor (selected period)</h3><div class="chartbox"><canvas id="chartVendor"></canvas></div></div>
     </div>
     <div class="card">
-      <h3>■ Top Alarm Cases (This Week)</h3>
+      <h3>■ Top Alarm Cases (selected period)</h3>
       <div id="top5Table"></div>
     </div>
     <div class="card">
-      <h3>■ Next Week's Focus Alarms (Auto-recommended)</h3>
-      <p class="muted" style="margin-top:-4px;font-size:12.5px;">Priority is calculated based on this week's occurrence frequency and current action status (in-progress/monitoring, etc.), with suggested next actions by status.</p>
+      <h3>■ Focus Alarms (Auto-recommended)</h3>
+      <p class="muted" style="margin-top:-4px;font-size:12.5px;">Priority is calculated from occurrence frequency in the selected period and current action status (in-progress/monitoring, etc.), with suggested next actions by status.</p>
       <div id="focusList"></div>
     </div>
   `;
@@ -697,11 +770,8 @@ function renderFileList(vendor){
   const cur = state[vendor].current;
   if(cur){
     const s = cur.summary;
-    const weekStr = s && s.weekStart ? `${fmtDate(s.weekStart)} ~ ${fmtDate(s.weekEnd)}` : 'No period info';
-    const warn = cur.summaryError
-      ? `<br><span style="color:#dc2626;">⚠ Summary sheet issue: ${esc(cur.summaryError)} — cause/trend charts will show 0 until a file with a standard Summary sheet is uploaded. The raw list data (${cur.listRows.length} rows) is still intact.</span>`
-      : '';
-    info.innerHTML = `📊 Currently reflected in dashboard: <b>${esc(cur.fileName)}</b> · Reference week: ${weekStr} · ${cur.listRows.length} alarm items${warn}`;
+    const rangeStr = s && s.dataStart ? `${fmtDate(s.dataStart)} ~ ${fmtDate(s.dataEnd)}` : 'No period info';
+    info.innerHTML = `📊 Currently reflected in dashboard: <b>${esc(cur.fileName)}</b> · Data period: ${rangeStr} · ${cur.listRows.length} alarm items · ${(s?.total||0).toLocaleString('en-US')} total alarms`;
   } else {
     info.innerHTML = files.length ? '<span class="muted">No valid alarm list (.xlsx) found among the uploaded files yet — the dashboard has no data to show.</span>' : '';
   }
@@ -755,8 +825,8 @@ async function handleFilesSelect(vendor, fileList){
   await refreshVendor(vendor);
   renderDashboard();
   if(tooLarge){
-    const sizeKB = (MAX_FILE_BYTES/1024).toFixed(0);
-    alert(`${tooLarge} file(s) were not uploaded because they exceed the ${sizeKB}KB shared-storage limit on the current (free) plan.\n\nLarger files like PPT/Word decks usually don't fit. To support large files, the Firebase project would need to be upgraded to a paid (Blaze) plan with Cloud Storage — ask about this if you need it.`);
+    const sizeMB = (MAX_FILE_BYTES/1024/1024).toFixed(0);
+    alert(`${tooLarge} file(s) were not uploaded because they exceed the ${sizeMB}MB per-file limit.`);
   }
   if(fail){
     setSyncStatus(vendor, `⚠ ${ok} uploaded, ${fail} failed${tooLarge?`, ${tooLarge} too large`:''}`, true);
@@ -764,18 +834,23 @@ async function handleFilesSelect(vendor, fileList){
     setSyncStatus(vendor, `✅ ${ok} file(s) uploaded${skippedFormat?` (${skippedFormat} not in standard alarm list format — stored as reference only)`:''}${tooLarge?` · ${tooLarge} skipped (too large)`:''}`, tooLarge>0 && ok===0);
   }
 }
-function downloadFile(vendor, fileId){
+async function downloadFile(vendor, fileId){
   const f = state[vendor].files.find(x=>x.id===fileId);
   if(!f) return;
   try{
-    const bytes = base64ToUint8Array(f.base64);
+    setSyncStatus(vendor, `⬇ Preparing download: ${f.fileName}...`);
+    const base64 = await fbGetFileBase64(vendor, f);
+    const bytes = base64ToUint8Array(base64);
     const blob = new Blob([bytes], {type:'application/octet-stream'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = f.fileName || `${vendor}.xlsx`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    setSyncStatus(vendor, `✅ Downloaded ${f.fileName}`);
   }catch(err){
+    console.error(err);
+    setSyncStatus(vendor, '❌ Download error: ' + err.message, true);
     alert('Download error: ' + err.message);
   }
 }
@@ -800,7 +875,8 @@ async function refreshVendor(vendor){
     state[vendor].files = files;
     const latestAlarm = files.find(f => f.isAlarmData);
     if(latestAlarm){
-      const bytes = base64ToUint8Array(latestAlarm.base64);
+      const base64 = await fbGetFileBase64(vendor, latestAlarm);
+      const bytes = base64ToUint8Array(base64);
       const wb = XLSX.read(bytes, {type:'array', cellDates:true});
       const data = parseVendorFile(wb, latestAlarm.fileName);
       data.fileId = latestAlarm.id;
@@ -818,107 +894,223 @@ async function refreshVendor(vendor){
 }
 
 /* ===================== Dashboard ===================== */
+// Selected analysis period (null = use full available data range). dashDates holds every
+// date that has data across the currently active vendors, in ascending order.
+let dashState = { start:null, end:null };
+let dashDates = [];
+let lastStats = null;   // most recent computeRangeStats result (for chart clicks)
+let lastLocReport = null; // { cause, rangeLabel, rows:[[location,count],...] }
+
 function activeVendors(filter){
   const list = filter==='ALL' ? VENDORS : [filter];
   return list.filter(v => state[v] && state[v].current);
 }
-function computeWowDelta(vendors){
-  const hist = loadHistory();
-  let weekTotal = 0;
-  vendors.forEach(v => { weekTotal += state[v]?.current?.summary?.causeWeek?.total || 0; });
-  let prevWeekTotal = 0, haveHist = false;
+function destroyChart(id){ if(chartInstances[id]){ chartInstances[id].destroy(); delete chartInstances[id]; } }
+function dkey(d){ return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`; }
+function causeColor(cause){ const i = CAUSE_LIST.indexOf(cause); return i>=0 ? CAUSE_COLORS[i] : '#9ca3af'; }
+function sameDay(a,b){ return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
+
+// Every date (with data) across the active vendors, ascending.
+function getAllDataDates(vendors){
+  const map = new Map();
   vendors.forEach(v=>{
-    const h = hist[v];
-    if(!h || h.length<2) return;
-    haveHist = true;
-    prevWeekTotal += h[h.length-2].weekTotal || 0;
+    (state[v].current.listRows||[]).forEach(row=>{
+      (row.daily||[]).forEach(e=>{ if(e.count>0) map.set(dkey(e.date), e.date); });
+    });
   });
-  if(!haveHist || prevWeekTotal<=0) return null;
-  const diff = weekTotal - prevWeekTotal;
-  const pct = Math.round((diff/prevWeekTotal)*100);
-  return { weekTotal, prevWeekTotal, diff, pct };
+  return Array.from(map.values()).sort((a,b)=>a-b);
 }
-function renderKPIs(vendors){
+// Resolve the effective [start,end] for the dashboard (selection or full range).
+function getSelectedRange(vendors){
+  if(dashState.start && dashState.end) return { start: dashState.start, end: dashState.end };
+  if(dashDates.length) return { start: dashDates[0], end: dashDates[dashDates.length-1] };
+  return { start:null, end:null };
+}
+// Aggregate everything for a [start,end] window from the per-day list data.
+function computeRangeStats(vendors, start, end){
+  const inRange = d => (!start || d>=start) && (!end || d<=end);
+  let total = 0;
+  const byCause = {}, locByCause = {}, statusByCause = {}, rows = [], dailyMap = {};
+  vendors.forEach(v=>{
+    (state[v].current.listRows||[]).forEach(row=>{
+      let sum = 0; const locs = [];
+      (row.daily||[]).forEach(e=>{
+        if(inRange(e.date) && e.count>0){
+          sum += e.count; total += e.count;
+          const k = dkey(e.date);
+          if(!dailyMap[k]) dailyMap[k] = { date:e.date, count:0 };
+          dailyMap[k].count += e.count;
+          e.locations.forEach(l=>locs.push(l));
+        }
+      });
+      if(sum>0){
+        const cause = row.cause || 'Unknown';
+        byCause[cause] = (byCause[cause]||0) + sum;
+        const lo = (locByCause[cause] = locByCause[cause] || {});
+        locs.forEach(l=>{ lo[l] = (lo[l]||0) + 1; });
+        const unspec = sum - locs.length;
+        if(unspec>0) lo['(unspecified)'] = (lo['(unspecified)']||0) + unspec;
+        const st = normalizeStatus(row.status);
+        if(st){ statusByCause[cause] = statusByCause[cause] || {}; statusByCause[cause][st] = (statusByCause[cause][st]||0) + 1; }
+        rows.push({ vendor:v, row, sum });
+      }
+    });
+  });
+  const dailyTotals = Object.values(dailyMap).sort((a,b)=>a.date-b.date);
+  return { total, byCause, locByCause, statusByCause, rows, dailyTotals, start, end };
+}
+// Total for the equally-long window immediately preceding [start,end] (for the delta KPI).
+function prevPeriodTotal(vendors, start, end){
+  if(!start || !end) return null;
+  const lenDays = Math.round((end - start)/86400000) + 1;
+  const prevEnd = new Date(start); prevEnd.setDate(prevEnd.getDate()-1);
+  const prevStart = new Date(prevEnd); prevStart.setDate(prevStart.getDate()-(lenDays-1));
+  const st = computeRangeStats(vendors, prevStart, prevEnd);
+  return { total: st.total, prevStart, prevEnd };
+}
+
+function renderKPIs(vendors, stats, range){
   const box = document.getElementById('kpiRow');
   if(!vendors.length){
     box.innerHTML = `<div class="kpi"><div class="label">Notice</div><div class="value" style="font-size:14px;">No data uploaded</div></div>`;
     return;
   }
-  let dayTotal=0, weekTotal=0, weekStart=null, weekEnd=null, ongoing=0, monitoring=0;
-  vendors.forEach(v=>{
-    const s = state[v].current.summary;
-    if(s?.causeDay?.total) dayTotal += s.causeDay.total;
-    if(s?.causeWeek?.total) weekTotal += s.causeWeek.total;
-    if(s?.weekStart){ weekStart = s.weekStart; weekEnd = s.weekEnd; }
-    const t = s?.improvement?.totals;
-    if(t){ ongoing += t['On-Going']||0; monitoring += t['Monitoring']||0; }
-  });
-  const wow = computeWowDelta(vendors);
-  let deltaHTML = '<span class="delta flat">No previous week data</span>';
-  if(wow){
-    const cls = wow.diff>0?'up':(wow.diff<0?'down':'flat');
-    const arrow = wow.diff>0?'▲':(wow.diff<0?'▼':'-');
-    deltaHTML = `<span class="delta ${cls}">vs last week ${arrow} ${Math.abs(wow.pct)}% (${wow.diff>0?'+':''}${wow.diff})</span>`;
+  const days = (range.start && range.end) ? Math.round((range.end-range.start)/86400000)+1 : 0;
+  const avg = days ? Math.round(stats.total/days) : 0;
+  let ongoing=0, monitoring=0;
+  Object.values(stats.statusByCause).forEach(st=>{ ongoing += st['On-Going']||0; monitoring += st['Monitoring']||0; });
+  const prev = prevPeriodTotal(vendors, range.start, range.end);
+  let deltaHTML = '<span class="delta flat">No prior period</span>';
+  if(prev && prev.total>0){
+    const diff = stats.total - prev.total;
+    const pct = Math.round((diff/prev.total)*100);
+    const cls = diff>0?'up':(diff<0?'down':'flat');
+    const arrow = diff>0?'▲':(diff<0?'▼':'-');
+    deltaHTML = `<span class="delta ${cls}">vs prev ${days}d ${arrow} ${Math.abs(pct)}% (${diff>0?'+':''}${diff})</span>`;
   }
   box.innerHTML = `
-    <div class="kpi"><div class="label">Reference Week</div><div class="value" style="font-size:17px;">${weekStart?`${fmtDate(weekStart)} ~ ${fmtDate(weekEnd)}`:'-'}</div></div>
-    <div class="kpi"><div class="label">Last 1-Day Alarms</div><div class="value">${dayTotal.toLocaleString('en-US')}</div></div>
-    <div class="kpi"><div class="label">This Week Total Alarms</div><div class="value">${weekTotal.toLocaleString('en-US')}</div>${deltaHTML}</div>
+    <div class="kpi"><div class="label">Selected Period</div><div class="value" style="font-size:17px;">${range.start?`${fmtDate(range.start)} ~ ${fmtDate(range.end)}`:'-'}</div><div class="delta flat">${days} day(s)</div></div>
+    <div class="kpi"><div class="label">Total Alarms (period)</div><div class="value">${stats.total.toLocaleString('en-US')}</div>${deltaHTML}</div>
+    <div class="kpi"><div class="label">Daily Average</div><div class="value">${avg.toLocaleString('en-US')}</div></div>
     <div class="kpi"><div class="label">Incomplete (In-progress + Monitoring)</div><div class="value" style="color:#ea580c;">${(ongoing+monitoring).toLocaleString('en-US')}</div></div>
     <div class="kpi"><div class="label">Vendors with Data</div><div class="value" style="font-size:17px;">${vendors.join(', ')}</div></div>
   `;
 }
-function destroyChart(id){ if(chartInstances[id]){ chartInstances[id].destroy(); delete chartInstances[id]; } }
-function renderCauseChart(vendors){
-  const dayVals = CAUSE_LIST.map(()=>0), weekVals = CAUSE_LIST.map(()=>0);
-  vendors.forEach(v=>{
-    const s = state[v].current.summary;
-    (s?.causeDay?.rows||[]).forEach(r=>{ const i=CAUSE_LIST.indexOf(r.cause); if(i>=0) dayVals[i]+=r.count; });
-    (s?.causeWeek?.rows||[]).forEach(r=>{ const i=CAUSE_LIST.indexOf(r.cause); if(i>=0) weekVals[i]+=r.count; });
+
+// Daily bar chart across ALL data, with a draggable selection overlay.
+function renderDailyChart(vendors){
+  const canvas = document.getElementById('chartDaily');
+  destroyChart('chartDaily');
+  if(!dashDates.length){
+    return;
+  }
+  const full = computeRangeStats(vendors, dashDates[0], dashDates[dashDates.length-1]);
+  const totalByKey = {}; full.dailyTotals.forEach(d=>{ totalByKey[dkey(d.date)] = d.count; });
+  const labels = dashDates.map(d=>fmtDate(d));
+  const data = dashDates.map(d=> totalByKey[dkey(d)] || 0);
+  const chart = new Chart(canvas, {
+    type:'bar',
+    data:{ labels, datasets:[{ label:'Alarms/day', data, backgroundColor:'#93c5fd', borderColor:'#2563eb', borderWidth:1 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ title:(it)=>labels[it[0].dataIndex] } } },
+      scales:{ y:{ beginAtZero:true } }
+    }
   });
+  // paint current selection
+  const range = getSelectedRange(vendors);
+  if(dashState.start && dashState.end){
+    const a = dashDates.findIndex(d=>sameDay(d, dashState.start));
+    const b = dashDates.findIndex(d=>sameDay(d, dashState.end));
+    if(a>=0 && b>=0) chart.$brush = { a:Math.min(a,b), b:Math.max(a,b) };
+  }
+  chart.update('none');
+  chartInstances['chartDaily'] = chart;
+}
+
+function renderCauseCharts(vendors, stats){
+  // Ordered by CAUSE_LIST but only causes that have data (plus any extra causes seen).
+  const present = CAUSE_LIST.filter(c => stats.byCause[c]>0)
+    .concat(Object.keys(stats.byCause).filter(c=>!CAUSE_LIST.includes(c) && stats.byCause[c]>0));
+  const labels = present, vals = present.map(c=>stats.byCause[c]);
+  const colors = present.map(causeColor);
+  const clickHandler = (evt, els)=>{ if(els.length){ showLocationReport(labels[els[0].index]); } };
+
   destroyChart('chartCause');
   chartInstances['chartCause'] = new Chart(document.getElementById('chartCause'), {
     type:'bar',
-    data:{ labels:CAUSE_LIST, datasets:[
-      {label:'Last 1 Day', data:dayVals, backgroundColor:'#93c5fd'},
-      {label:'This Week', data:weekVals, backgroundColor:'#2563eb'}
-    ]},
-    options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } }
+    data:{ labels, datasets:[{ label:'Alarms', data:vals, backgroundColor:colors }] },
+    options:{ responsive:true, maintainAspectRatio:false, onClick:clickHandler,
+      plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true } } }
+  });
+
+  // Second "cause share" chart as a horizontal bar (replaces the old doughnut).
+  const total = vals.reduce((a,b)=>a+b,0) || 1;
+  destroyChart('chartCauseBar');
+  chartInstances['chartCauseBar'] = new Chart(document.getElementById('chartCauseBar'), {
+    type:'bar',
+    data:{ labels, datasets:[{ label:'Share %', data:present.map(c=>Math.round(stats.byCause[c]/total*100)), backgroundColor:colors }] },
+    options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, onClick:clickHandler,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:(it)=>`${it.parsed.x}%  (${stats.byCause[labels[it.dataIndex]]} alarms)` } } },
+      scales:{ x:{ beginAtZero:true, max:100 } } }
   });
 }
-function renderCauseDoughnut(vendors){
-  const weekVals = CAUSE_LIST.map(()=>0);
-  vendors.forEach(v=>{
-    const s = state[v].current.summary;
-    (s?.causeWeek?.rows||[]).forEach(r=>{ const i=CAUSE_LIST.indexOf(r.cause); if(i>=0) weekVals[i]+=r.count; });
-  });
-  destroyChart('chartCauseDonut');
-  chartInstances['chartCauseDonut'] = new Chart(document.getElementById('chartCauseDonut'), {
-    type:'doughnut',
-    data:{ labels:CAUSE_LIST, datasets:[{ data:weekVals, backgroundColor:CAUSE_COLORS }] },
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'bottom', labels:{ boxWidth:11, font:{size:10} } } } }
-  });
-}
-function renderImproveChart(vendors){
+
+function renderImproveChart(vendors, stats){
   const statuses = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
-  const totals = {}; statuses.forEach(s=>totals[s]=CAUSE_LIST.map(()=>0));
-  vendors.forEach(v=>{
-    const imp = state[v].current.summary?.improvement;
-    if(!imp) return;
-    imp.rows.forEach(r=>{
-      const ci = CAUSE_LIST.indexOf(r.cause);
-      if(ci<0) return;
-      statuses.forEach(s=>{ totals[s][ci] += (r[s]||0); });
-    });
-  });
+  const causes = CAUSE_LIST.filter(c => stats.statusByCause[c]);
+  const totals = {}; statuses.forEach(s=>totals[s]=causes.map(c=> stats.statusByCause[c]?.[s] || 0));
   destroyChart('chartImprove');
   chartInstances['chartImprove'] = new Chart(document.getElementById('chartImprove'), {
     type:'bar',
-    data:{ labels:CAUSE_LIST, datasets: statuses.map(s=>({
-      label:s, data:totals[s], backgroundColor: STATUS_COLOR[s] || '#9ca3af'
-    })) },
+    data:{ labels:causes, datasets: statuses.map(s=>({ label:s, data:totals[s], backgroundColor: STATUS_COLOR[s] || '#9ca3af' })) },
     options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{stacked:true}, y:{stacked:true, beginAtZero:true} } }
   });
+}
+
+/* ===================== Location report (click a cause bar) ===================== */
+function showLocationReport(cause){
+  if(!lastStats) return;
+  const locObj = lastStats.locByCause[cause] || {};
+  const rows = Object.entries(locObj).sort((a,b)=>b[1]-a[1]);
+  const rangeLabel = (lastStats.start && lastStats.end) ? `${fmtDate(lastStats.start)} ~ ${fmtDate(lastStats.end)}` : 'All';
+  lastLocReport = { cause, rangeLabel, rows };
+  const card = document.getElementById('locationReportCard');
+  document.getElementById('locReportTitle').textContent = `■ Location Report — ${cause}  (${rangeLabel})`;
+  const body = document.getElementById('locReportBody');
+  if(!rows.length){
+    body.innerHTML = '<p class="empty">No location data for this cause in the selected period.</p>';
+  } else {
+    const total = rows.reduce((a,r)=>a+r[1],0);
+    body.innerHTML = `<div class="tablewrap" style="max-height:340px;"><table>
+      <thead><tr><th style="width:50px;">No.</th><th>Location</th><th style="width:110px;">Count</th><th style="width:90px;">Share</th></tr></thead>
+      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td class="num">${r[1]}</td><td class="num">${Math.round(r[1]/total*100)}%</td></tr>`).join('')}
+      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td>Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
+  }
+  card.style.display = '';
+  card.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+function locReportFilenameBase(){
+  const c = (lastLocReport?.cause || 'cause').replace(/[^\w가-힣]+/g,'_');
+  const r = (lastLocReport?.rangeLabel || '').replace(/[^\w]+/g,'');
+  return `location_report_${c}_${r}`;
+}
+function exportLocReportCsv(){
+  if(!lastLocReport || !lastLocReport.rows.length) return;
+  const lines = [['Location','Count'], ...lastLocReport.rows.map(r=>[r[0], r[1]])];
+  const csv = '﻿' + lines.map(row=>row.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=locReportFilenameBase()+'.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+function exportLocReportXlsx(){
+  if(!lastLocReport || !lastLocReport.rows.length) return;
+  const aoa = [['Cause', lastLocReport.cause], ['Period', lastLocReport.rangeLabel], [], ['Location','Count'], ...lastLocReport.rows];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Location Report');
+  XLSX.writeFile(wb, locReportFilenameBase()+'.xlsx');
 }
 function renderTrendChart(vendors){
   const hist = loadHistory();
@@ -949,131 +1141,148 @@ function renderTrendChart(vendors){
     options:{responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true}}}
   });
 }
-function renderVendorCompareChart(filter, vendors){
+function renderVendorCompareChart(filter, allVendors, range){
   const card = document.getElementById('vendorCompareCard');
   if(filter!=='ALL'){ card.style.display='none'; return; }
   card.style.display='';
-  const labels = vendors, data = vendors.map(v => state[v].current.summary?.causeWeek?.total ?? 0);
+  const labels = allVendors;
+  const data = allVendors.map(v => computeRangeStats([v], range.start, range.end).total);
   destroyChart('chartVendor');
   chartInstances['chartVendor'] = new Chart(document.getElementById('chartVendor'), {
     type:'bar',
-    data:{ labels, datasets:[{ label:'This Week Total Alarms', data, backgroundColor: labels.map(v=>VENDOR_COLOR[v]) }] },
+    data:{ labels, datasets:[{ label:'Alarms (period)', data, backgroundColor: labels.map(v=>VENDOR_COLOR[v]) }] },
     options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } }
   });
 }
-function renderTop5(vendors){
-  let items = [];
-  vendors.forEach(v=>{
-    (state[v].current.summary?.top5Week || []).forEach(r => items.push({vendor:v, ...r}));
-  });
-  items.sort((a,b) => (b.count||0)-(a.count||0));
-  items = items.slice(0,10);
-  const el = document.getElementById('top5Table');
-  if(!items.length){ el.innerHTML = '<p class="empty">No data available.</p>'; return; }
-  el.innerHTML = `<table><thead><tr><th>Vendor</th><th>Machine</th><th>Alarm Name</th><th>Case</th><th>This Week Count</th></tr></thead>
-    <tbody>${items.map(i=>`<tr><td><span class="tag">${esc(i.vendor)}</span></td><td>${esc(i.machine)}</td><td>${esc(i.alarmName)}</td><td>${esc(i.caseNo)}</td><td class="num">${num(i.count)}</td></tr>`).join('')}</tbody></table>`;
-}
-function computeFocusList(vendors){
-  const STATUS_WEIGHT = {'Unavoidable':0.25, 'Operational':0.15, 'On-going':1.0, 'On-Going':1.0, 'Monitoring':0.7, 'Completed':0.05};
-  let items = [];
-  vendors.forEach(v=>{
-    (state[v].current.listRows||[]).forEach(row=>{
-      if(!row.weekSum) return;
-      const w = STATUS_WEIGHT[row.status] ?? 0.6;
-      const score = row.weekSum * w;
-      if(score<=0) return;
-      items.push({ vendor:v, ...row, score });
+function renderTrendChart(vendors){
+  const hist = loadHistory();
+  const allKeys = new Set();
+  vendors.forEach(v => (hist[v]||[]).forEach(s=>allKeys.add(s.weekKey)));
+  const keys = Array.from(allKeys).sort();
+  destroyChart('chartTrend');
+  if(!keys.length){
+    chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
+      type:'line', data:{labels:[], datasets:[]},
+      options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true, text:'Upload files over time to accumulate trend data.'}}}
     });
+    return;
+  }
+  const datasets = vendors.map(v=>{
+    const map = {}; (hist[v]||[]).forEach(s=>map[s.weekKey]=s.weekTotal);
+    return { label:v, data: keys.map(k=>map[k] ?? null), borderColor: VENDOR_COLOR[v], backgroundColor: VENDOR_COLOR[v], spanGaps:true, tension:.25 };
   });
+  const labels = keys.map(k=>{ const [s,e]=k.split('_'); return `${s.slice(5).replace('-','/')}~${e.slice(5).replace('-','/')}`; });
+  chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
+    type:'line', data:{labels, datasets}, options:{responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true}}}
+  });
+}
+function renderTop5(stats){
+  const items = stats.rows.slice().sort((a,b)=>b.sum-a.sum).slice(0,10);
+  const el = document.getElementById('top5Table');
+  if(!items.length){ el.innerHTML = '<p class="empty">No data available for the selected period.</p>'; return; }
+  el.innerHTML = `<table><thead><tr><th>Vendor</th><th>Machine</th><th>Alarm Name</th><th>Case</th><th>Cause</th><th>Count (period)</th></tr></thead>
+    <tbody>${items.map(i=>`<tr><td><span class="tag">${esc(i.vendor)}</span></td><td>${esc(i.row.machine)}</td><td>${esc(i.row.alarmName)}</td><td>${esc(i.row.caseNo)}</td><td>${esc(i.row.cause)}</td><td class="num">${num(i.sum)}</td></tr>`).join('')}</tbody></table>`;
+}
+function computeFocusList(stats){
+  const STATUS_WEIGHT = {'Unavoidable':0.25, 'Operational':0.15, 'On-going':1.0, 'On-Going':1.0, 'Monitoring':0.7, 'Completed':0.05};
+  const items = stats.rows.map(r=>{
+    const w = STATUS_WEIGHT[r.row.status] ?? 0.6;
+    return { vendor:r.vendor, ...r.row, periodSum:r.sum, score: r.sum * w };
+  }).filter(it=>it.score>0);
   items.sort((a,b)=>b.score-a.score);
   return items.slice(0,8);
 }
-function renderFocusList(vendors){
+function renderFocusList(stats){
   const el = document.getElementById('focusList');
-  const items = computeFocusList(vendors);
-  if(!items.length){ el.innerHTML = '<p class="empty">No data to recommend. Please upload an alarm list.</p>'; return; }
+  const items = computeFocusList(stats);
+  if(!items.length){ el.innerHTML = '<p class="empty">No data to recommend for the selected period.</p>'; return; }
   el.innerHTML = items.map((it,idx)=>`
     <div class="focusItem">
       <div class="top">
         <span><span class="rank">${idx+1}</span><span class="tag">${esc(it.vendor)}</span>${esc(it.machine)} · Case ${esc(it.caseNo)} · ${esc(it.cause)}</span>
-        <span>${statusBadge(it.status)} &nbsp; This week ${it.weekSum} cases</span>
+        <span>${statusBadge(it.status)} &nbsp; ${it.periodSum} in period</span>
       </div>
       <div class="desc">${esc((it.observedIssue||it.symptom||it.alarmName||'').toString().slice(0,180))}</div>
       <div class="hint">👉 ${ACTION_HINT[it.status] || 'Current status check needed'}</div>
     </div>
   `).join('');
 }
-function renderNarrative(vendors){
+function renderNarrative(vendors, stats, range){
   const box = document.getElementById('narrativeBox');
   if(!vendors.length){
-    box.innerHTML = '<span class="muted">No alarm lists uploaded. Upload a file in a vendor tab and this week\'s activity summary and next week\'s focus recommendations will be generated here automatically.</span>';
+    box.innerHTML = '<span class="muted">No alarm lists uploaded. Upload a file in a vendor tab and the period summary and focus recommendations will be generated here automatically.</span>';
     return;
   }
-  let weekStart=null, weekEnd=null, weekTotal=0;
-  const causeAgg = {}, impAgg = {};
-  vendors.forEach(v=>{
-    const s = state[v].current.summary;
-    if(!s) return;
-    if(s.weekStart){ weekStart = s.weekStart; weekEnd = s.weekEnd; }
-    weekTotal += s.causeWeek?.total || 0;
-    (s.causeWeek?.rows||[]).forEach(r=>{ causeAgg[r.cause] = (causeAgg[r.cause]||0) + (r.count||0); });
-    if(s.improvement?.totals){
-      Object.entries(s.improvement.totals).forEach(([k,val])=>{
-        if(typeof val === 'number') impAgg[k] = (impAgg[k]||0) + val;
-      });
-    }
-  });
-  const summaryErrors = vendors.filter(v=>state[v].current?.summaryError).map(v=>`${v}: ${state[v].current.summaryError}`);
-  const topCauses = Object.entries(causeAgg).filter(([,c])=>c>0).sort((a,b)=>b[1]-a[1]).slice(0,2);
-  const wow = computeWowDelta(vendors);
-  const wowSentence = wow
-    ? (wow.diff===0 ? 'This is the same level as last week.' : `This is a ${Math.abs(wow.pct)}% ${wow.diff>0?'increase':'decrease'} compared to last week (${wow.prevWeekTotal} cases).`)
-    : 'Comparison data with last week will start accumulating from next week\'s upload.';
+  const rangeStr = (range.start && range.end) ? `${fmtDate(range.start)}~${fmtDate(range.end)}` : 'All';
+  const topCauses = Object.entries(stats.byCause).filter(([,c])=>c>0).sort((a,b)=>b[1]-a[1]).slice(0,2);
   const causeSentence = topCauses.length
-    ? topCauses.map(([c,cnt])=>`${c} (${cnt} cases, ${weekTotal?Math.round(cnt/weekTotal*100):0}%)`).join(', ') + ' were the most frequent, in that order.'
+    ? topCauses.map(([c,cnt])=>`${c} (${cnt}, ${stats.total?Math.round(cnt/stats.total*100):0}%)`).join(', ') + ' were the most frequent, in that order.'
     : 'No cause data was found.';
-  let top1 = null;
-  vendors.forEach(v=>{
-    (state[v].current.summary?.top5Week||[]).forEach(r=>{
-      if(!top1 || (r.count||0) > (top1.count||0)) top1 = {...r, vendor:v};
-    });
-  });
-  const topCaseSentence = top1 ? ` The most frequent case was '${esc(top1.alarmName)}' (${top1.count} cases) on the ${esc(top1.machine)} at ${esc(top1.vendor)}.` : '';
-  const ongoing = impAgg['On-Going']||0, monitoring = impAgg['Monitoring']||0, completed = impAgg['Completed']||0;
-  const focus = computeFocusList(vendors).slice(0,3);
+  const prev = prevPeriodTotal(vendors, range.start, range.end);
+  let deltaSentence = 'No prior period to compare against.';
+  if(prev && prev.total>0){
+    const diff = stats.total - prev.total; const pct = Math.round(Math.abs(diff/prev.total*100));
+    deltaSentence = diff===0 ? 'This is the same level as the prior period.' : `This is a ${pct}% ${diff>0?'increase':'decrease'} vs the prior equal-length period (${prev.total}).`;
+  }
+  const top = stats.rows.slice().sort((a,b)=>b.sum-a.sum)[0];
+  const topCaseSentence = top ? ` The most frequent case was '${esc(top.row.alarmName)}' (${top.sum}) on ${esc(top.row.machine)} at ${esc(top.vendor)}.` : '';
+  let ongoing=0, monitoring=0, completed=0;
+  Object.values(stats.statusByCause).forEach(st=>{ ongoing+=st['On-Going']||0; monitoring+=st['Monitoring']||0; completed+=st['Completed']||0; });
+  const focus = computeFocusList(stats).slice(0,3);
   const focusSentence = focus.length
-    ? focus.map((it,idx)=>`${idx+1}) ${esc(it.vendor)} ${esc(it.machine)} Case ${esc(it.caseNo)} (${esc(it.cause)}) — ${it.weekSum} cases this week, current status ${esc(it.status||'Not specified')} → ${ACTION_HINT[it.status] || 'Current status check needed'}`).join('<br>')
+    ? focus.map((it,idx)=>`${idx+1}) ${esc(it.vendor)} ${esc(it.machine)} Case ${esc(it.caseNo)} (${esc(it.cause)}) — ${it.periodSum} in period, status ${esc(it.status||'Not specified')} → ${ACTION_HINT[it.status] || 'Current status check needed'}`).join('<br>')
     : 'No items requiring priority attention were identified.';
   box.innerHTML = `
-    ${summaryErrors.length ? `<div style="margin-bottom:10px;color:#dc2626;font-size:12.5px;">⚠ Summary sheet parsing issue — ${esc(summaryErrors.join(' · '))}. Cause/trend numbers for that vendor will read as 0 until a file with a standard Summary sheet is uploaded.</div>` : ''}
-    <div style="margin-bottom:12px;"><b>📝 This Week's Activity Summary</b> <span class="muted">(${weekStart?`${fmtDate(weekStart)}~${fmtDate(weekEnd)}`:'Period unknown'} · ${esc(vendors.join(', '))})</span><br>
-    A total of <b>${weekTotal.toLocaleString('en-US')} alarms</b> occurred this week. ${wowSentence} By cause, ${causeSentence}${topCaseSentence} Action status: On-going ${ongoing}, Monitoring ${monitoring}, Completed ${completed}.</div>
-    <div><b>👉 Next Week's Focus Recommendations (Action Items)</b><br>${focusSentence}</div>
+    <div style="margin-bottom:12px;"><b>📝 Period Summary</b> <span class="muted">(${rangeStr} · ${esc(vendors.join(', '))})</span><br>
+    A total of <b>${stats.total.toLocaleString('en-US')} alarms</b> occurred in this period. ${deltaSentence} By cause, ${causeSentence}${topCaseSentence} Action status: On-going ${ongoing}, Monitoring ${monitoring}, Completed ${completed}.</div>
+    <div><b>👉 Focus Recommendations (Action Items)</b><br>${focusSentence}</div>
   `;
+}
+function renderDashboardBody(){
+  const filter = document.getElementById('dashVendorFilter')?.value || 'ALL';
+  const vendors = activeVendors(filter);
+  if(!vendors.length){
+    renderKPIs(vendors, {total:0,statusByCause:{}}, {start:null,end:null});
+    renderNarrative(vendors);
+    ['chartCause','chartCauseBar','chartImprove','chartTrend','chartVendor'].forEach(destroyChart);
+    document.getElementById('top5Table').innerHTML = '<p class="empty">No alarm lists uploaded. Please upload a file in a vendor tab.</p>';
+    document.getElementById('focusList').innerHTML = '';
+    document.getElementById('locationReportCard').style.display = 'none';
+    document.getElementById('vendorCompareCard').style.display = filter==='ALL' ? '' : 'none';
+    document.getElementById('rangeLabel').textContent = 'All';
+    return;
+  }
+  const range = getSelectedRange(vendors);
+  document.getElementById('rangeLabel').textContent = range.start ? `${fmtDate(range.start)} ~ ${fmtDate(range.end)}` : 'All';
+  const stats = computeRangeStats(vendors, range.start, range.end);
+  lastStats = stats;
+  renderKPIs(vendors, stats, range);
+  renderNarrative(vendors, stats, range);
+  try{
+    renderCauseCharts(vendors, stats);
+    renderImproveChart(vendors, stats);
+    renderTrendChart(filter==='ALL' ? VENDORS.filter(v=>state[v]&&state[v].current) : vendors);
+    renderVendorCompareChart(filter, VENDORS.filter(v=>state[v] && state[v].current), range);
+  }catch(err){
+    console.error('Chart rendering error:', err);
+  }
+  renderTop5(stats);
+  renderFocusList(stats);
+  // refresh open location report for the new range, if one is showing
+  if(lastLocReport && document.getElementById('locationReportCard').style.display!=='none'){
+    showLocationReport(lastLocReport.cause);
+  }
 }
 function renderDashboard(){
   const filter = document.getElementById('dashVendorFilter')?.value || 'ALL';
   const vendors = activeVendors(filter);
-  renderKPIs(vendors);
-  renderNarrative(vendors);
-  if(!vendors.length){
-    ['chartCause','chartCauseDonut','chartImprove','chartTrend','chartVendor'].forEach(destroyChart);
-    document.getElementById('top5Table').innerHTML = '<p class="empty">No alarm lists uploaded. Please upload a file in a vendor tab.</p>';
-    document.getElementById('focusList').innerHTML = '';
-    document.getElementById('vendorCompareCard').style.display = filter==='ALL' ? '' : 'none';
-    return;
+  dashDates = getAllDataDates(vendors);
+  // Clamp any existing selection to the currently available dates.
+  if(dashState.start && (!dashDates.length || dashState.start < dashDates[0] || dashState.end > dashDates[dashDates.length-1])){
+    dashState = { start:null, end:null };
   }
-  try{
-    renderCauseChart(vendors);
-    renderCauseDoughnut(vendors);
-    renderImproveChart(vendors);
-    renderTrendChart(filter==='ALL' ? VENDORS : vendors);
-    renderVendorCompareChart(filter, VENDORS.filter(v=>state[v] && state[v].current));
-  }catch(err){
-    console.error('Chart rendering error (may be a Chart.js loading issue):', err);
-  }
-  renderTop5(vendors);
-  renderFocusList(vendors);
+  renderDailyChart(vendors);
+  renderDashboardBody();
 }
 
 /* ===================== Initialization ===================== */
@@ -1110,11 +1319,18 @@ document.addEventListener('DOMContentLoaded', ()=>{
   });
 
   document.getElementById('panel-DASH').addEventListener('change', e=>{
-    if(e.target.id==='dashVendorFilter') renderDashboard();
+    if(e.target.id==='dashVendorFilter'){ dashState={start:null,end:null}; renderDashboard(); }
   });
-  document.addEventListener('click', e=>{
-    if(e.target.id==='dashRefresh') renderDashboard();
+  document.getElementById('panel-DASH').addEventListener('click', e=>{
+    if(e.target.id==='dashRefresh'){ renderDashboard(); }
+    if(e.target.id==='rangeReset'){ dashState={start:null,end:null}; renderDashboard(); }
+    if(e.target.id==='locReportClose'){ document.getElementById('locationReportCard').style.display='none'; }
+    if(e.target.id==='locExportCsv'){ exportLocReportCsv(); }
+    if(e.target.id==='locExportXlsx'){ exportLocReportXlsx(); }
   });
+
+  // Drag-to-select the analysis period on the daily bar chart.
+  setupDailyChartDrag();
 
   // On page load, automatically fetch each vendor's file list from the shared storage (Firebase).
   (async ()=>{
