@@ -1108,7 +1108,11 @@ function getSelectedRange(vendors){
 function computeRangeStats(vendors, start, end){
   const inRange = d => (!start || d>=start) && (!end || d<=end);
   let total = 0;
-  const byCause = {}, locByCause = {}, unspecByCause = {}, statusByCause = {}, rows = [], dailyMap = {};
+  // locByCause[cause] and unspecByCause[cause] are objects keyed by "locationobservedIssue"
+  // (or just "observedIssue" for unspecified) → count, so the location report can show
+  // the Observed Issue / Cause text alongside each location.
+  const SEP = '';
+  const byCause = {}, locByCause = {}, unspecByCause = {}, unspecTotalByCause = {}, statusByCause = {}, rows = [], dailyMap = {};
   vendors.forEach(v=>{
     (state[v].current.listRows||[]).forEach(row=>{
       let sum = 0; const locs = [];
@@ -1123,11 +1127,17 @@ function computeRangeStats(vendors, start, end){
       });
       if(sum>0){
         const cause = row.cause || 'Unknown';
+        const issue = (row.observedIssue != null ? String(row.observedIssue).trim() : '');
         byCause[cause] = (byCause[cause]||0) + sum;
-        const lo = (locByCause[cause] = locByCause[cause] || {}); // real locations only
-        locs.forEach(l=>{ lo[l] = (lo[l]||0) + 1; });
+        const lo = (locByCause[cause] = locByCause[cause] || {});   // real locations, keyed by loc+issue
+        locs.forEach(l=>{ const key = l + SEP + issue; lo[key] = (lo[key]||0) + 1; });
         const unspec = sum - locs.length;   // occurrences with no recorded location
-        if(unspec>0) unspecByCause[cause] = (unspecByCause[cause]||0) + unspec;
+        if(unspec>0){
+          unspecTotalByCause[cause] = (unspecTotalByCause[cause]||0) + unspec;
+          const ui = (unspecByCause[cause] = unspecByCause[cause] || {});
+          const key = SEP + issue;
+          ui[key] = (ui[key]||0) + unspec;
+        }
         const st = normalizeStatus(row.status);
         if(st){ statusByCause[cause] = statusByCause[cause] || {}; statusByCause[cause][st] = (statusByCause[cause][st]||0) + 1; }
         rows.push({ vendor:v, row, sum });
@@ -1135,7 +1145,7 @@ function computeRangeStats(vendors, start, end){
     });
   });
   const dailyTotals = Object.values(dailyMap).sort((a,b)=>a.date-b.date);
-  return { total, byCause, locByCause, unspecByCause, statusByCause, rows, dailyTotals, start, end };
+  return { total, byCause, locByCause, unspecByCause, unspecTotalByCause, statusByCause, rows, dailyTotals, start, end, SEP };
 }
 // Total for the equally-long window immediately preceding [start,end] (for the delta KPI).
 function prevPeriodTotal(vendors, start, end){
@@ -1251,20 +1261,29 @@ function renderImproveChart(vendors, stats){
 /* ===================== Location report (click a cause bar) ===================== */
 function showLocationReport(cause){
   if(!lastStats) return;
+  const SEP = lastStats.SEP || '';
   const locObj = lastStats.locByCause[cause] || {};
-  const unspec = lastStats.unspecByCause?.[cause] || 0;
-  // Rows: [unitId(full location), machineCode(prefix), machineName, count]
+  const unspecTotal = lastStats.unspecTotalByCause?.[cause] || 0;
+  // Each row: [unitId, machineCode, machineName, cause, observedIssue, count]
   const realEntries = Object.entries(locObj);
   let rows, note = '';
-  // Each row: [unitId, machineCode, machineName, cause, count]
   if(realEntries.length){
     // We have recorded locations → show them. Occurrences with no location are excluded
     // (they came from dates before location logging started) with a footnote.
-    rows = realEntries.map(([loc,count])=>[loc, machinePrefix(loc), machineName(loc), cause, count]).sort((a,b)=>b[4]-a[4]);
-    if(unspec>0) note = `${unspec} occurrence(s) in this period had no recorded location and are excluded from the table.`;
+    rows = realEntries.map(([key,count])=>{
+      const si = key.indexOf(SEP);
+      const loc = si>=0 ? key.slice(0,si) : key;
+      const issue = si>=0 ? key.slice(si+SEP.length) : '';
+      return [loc, machinePrefix(loc), machineName(loc), cause, issue, count];
+    }).sort((a,b)=>b[5]-a[5]);
+    if(unspecTotal>0) note = `${unspecTotal} occurrence(s) in this period had no recorded location and are excluded from the table.`;
   } else {
-    // No recorded locations in this period at all → show a single unspecified row.
-    rows = unspec>0 ? [['(unspecified)','','(no location recorded)',cause,unspec]] : [];
+    // No recorded locations at all in this period → list by observed issue as unspecified.
+    const ui = lastStats.unspecByCause?.[cause] || {};
+    rows = Object.entries(ui).map(([key,count])=>{
+      const issue = key.indexOf(SEP)>=0 ? key.slice(key.indexOf(SEP)+SEP.length) : '';
+      return ['(unspecified)','','(no location recorded)',cause,issue,count];
+    }).sort((a,b)=>b[5]-a[5]);
   }
   const rangeLabel = (lastStats.start && lastStats.end) ? `${fmtDate(lastStats.start)} ~ ${fmtDate(lastStats.end)}` : 'All';
   lastLocReport = { cause, rangeLabel, rows };
@@ -1274,11 +1293,12 @@ function showLocationReport(cause){
   if(!rows.length){
     body.innerHTML = '<p class="empty">No location data for this cause in the selected period.</p>';
   } else {
-    const total = rows.reduce((a,r)=>a+r[4],0);
-    body.innerHTML = `${note?`<p class="muted" style="margin-top:0;font-size:12px;">ℹ ${esc(note)}</p>`:''}<div class="tablewrap" style="max-height:360px;"><table>
-      <thead><tr><th style="width:44px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th>Cause</th><th style="width:90px;">Count</th><th style="width:80px;">Share</th></tr></thead>
-      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td class="num">${r[4]}</td><td class="num">${Math.round(r[4]/total*100)}%</td></tr>`).join('')}
-      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="4">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
+    const total = rows.reduce((a,r)=>a+r[5],0);
+    const clip = s => { s = String(s||''); return s.length>160 ? s.slice(0,160)+'…' : s; };
+    body.innerHTML = `${note?`<p class="muted" style="margin-top:0;font-size:12px;">ℹ ${esc(note)}</p>`:''}<div class="tablewrap" style="max-height:400px;"><table>
+      <thead><tr><th style="width:40px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th>Cause</th><th style="min-width:260px;">Observed Issue / Cause</th><th style="width:70px;">Count</th><th style="width:70px;">Share</th></tr></thead>
+      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td style="white-space:pre-wrap;" title="${esc(r[4])}">${esc(clip(r[4]))}</td><td class="num">${r[5]}</td><td class="num">${Math.round(r[5]/total*100)}%</td></tr>`).join('')}
+      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="5">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
   }
   card.style.display = '';
   card.scrollIntoView({ behavior:'smooth', block:'nearest' });
@@ -1290,7 +1310,7 @@ function locReportFilenameBase(){
 }
 function exportLocReportCsv(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
-  const header = ['Unit ID','Machine Code','Machine Name','Cause','Alarm Count'];
+  const header = ['Unit ID','Machine Code','Machine Name','Cause','Observed Issue / Cause','Alarm Count'];
   const lines = [header, ...lastLocReport.rows];
   const csv = '﻿' + lines.map(row=>row.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\r\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
@@ -1302,11 +1322,11 @@ function exportLocReportXlsx(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
   const aoa = [
     ['Cause', lastLocReport.cause], ['Period', lastLocReport.rangeLabel], [],
-    ['Unit ID','Machine Code','Machine Name','Cause','Alarm Count'],
+    ['Unit ID','Machine Code','Machine Name','Cause','Observed Issue / Cause','Alarm Count'],
     ...lastLocReport.rows
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{wch:22},{wch:16},{wch:32},{wch:18},{wch:12}];
+  ws['!cols'] = [{wch:22},{wch:16},{wch:32},{wch:16},{wch:60},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Location Report');
   XLSX.writeFile(wb, locReportFilenameBase()+'.xlsx');
