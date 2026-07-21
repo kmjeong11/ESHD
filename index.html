@@ -91,6 +91,22 @@
   .filetype-tag{ display:inline-block; font-size:10.5px; padding:2px 6px; border-radius:4px; font-weight:700; margin-left:6px; }
   .filetype-tag.dash{ background:#dbeafe; color:#1d4ed8; }
   .filetype-tag.other{ background:#f3f4f6; color:#4b5563; }
+  .filtergrid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+  .filterbox{ border:1px solid var(--border); border-radius:8px; padding:10px; background:#fcfdff; }
+  .filterbox .ftitle{ font-weight:700; font-size:12.5px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }
+  .filterbox .fcount{ font-size:11px; color:var(--muted); font-weight:600; }
+  .filtersearch{ width:100%; padding:5px 8px; border:1px solid var(--border); border-radius:6px; font-size:12px; margin-bottom:6px; }
+  .filterlist{ max-height:160px; overflow:auto; border-top:1px solid #eef0f4; padding-top:4px; }
+  .filterlist label{ display:flex; align-items:center; gap:6px; font-size:12px; padding:2px 2px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .filterlist label:hover{ background:#f1f5ff; }
+  .filterlist input{ flex:none; }
+  .filterall{ font-weight:700; border-bottom:1px solid #eef0f4; padding-bottom:4px; margin-bottom:2px; }
+  .dashwrap{ display:flex; gap:16px; align-items:flex-start; }
+  .dashside{ width:250px; flex:none; position:sticky; top:10px; max-height:calc(100vh - 20px); overflow:auto; }
+  .dashmain{ flex:1; min-width:0; }
+  .dashside .filtergrid{ grid-template-columns:1fr; }
+  .dashside .filterlist{ max-height:150px; }
+  @media (max-width:900px){ .dashwrap{ flex-direction:column; } .dashside{ width:100%; position:static; max-height:none; } .dashside .filtergrid{ grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); } }
 </style>
 </head>
 <body>
@@ -961,6 +977,24 @@ function vendorPanelHTML(v){
 
 function dashboardPanelHTML(){
   return `
+   <div class="dashwrap">
+    <aside class="dashside">
+      <div class="card">
+        <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <span>🔎 Filters</span>
+          <button class="btn gray sm" id="filterClear">Clear</button>
+        </h3>
+        <div class="muted" id="filterSummary" style="font-size:11.5px;font-weight:600;margin-bottom:8px;"></div>
+        <div class="filterbox" style="margin-bottom:12px;">
+          <div class="ftitle"><span>📅 Date</span><button class="btn gray sm" id="rangeReset">All</button></div>
+          <label style="font-size:12px;display:block;margin-bottom:6px;">From<br><input type="date" id="dateStart" class="filtersearch" style="margin-bottom:0;"></label>
+          <label style="font-size:12px;display:block;">To<br><input type="date" id="dateEnd" class="filtersearch" style="margin-bottom:0;"></label>
+          <div class="muted" style="font-size:11px;margin-top:6px;">Selected: <span id="rangeLabel" style="color:#1d4ed8;font-weight:700;">All</span></div>
+        </div>
+        <div class="filtergrid" id="filterGrid"></div>
+      </div>
+    </aside>
+    <div class="dashmain">
     <div class="card" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
       <b>Select Vendor</b>
       <select class="vendorfilter" id="dashVendorFilter">
@@ -971,15 +1005,7 @@ function dashboardPanelHTML(){
       <span class="muted" style="font-size:12px;">Pick a start/end date below, or drag across the daily chart, to set the analysis period.</span>
     </div>
     <div class="card">
-      <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <span>■ Daily Alarm Count</span>
-        <span style="font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-          From <select id="rangeStart" class="vendorfilter" style="padding:4px 6px;"></select>
-          To <select id="rangeEnd" class="vendorfilter" style="padding:4px 6px;"></select>
-          <button class="btn gray sm" id="rangeReset">Reset (All)</button>
-        </span>
-      </h3>
-      <p class="muted" style="margin-top:-4px;font-size:11.5px;">Selected period: <span id="rangeLabel" style="color:#1d4ed8;font-weight:700;">All</span> · you can also drag across the bars.</p>
+      <h3>■ Daily Alarm Count <span class="muted" style="font-size:11.5px;font-weight:400;">— pick dates in the 📅 Date filter, or drag across the bars</span></h3>
       <div class="chartbox" style="height:200px;"><canvas id="chartDaily"></canvas></div>
     </div>
     <div class="card" id="narrativeBox">Loading data...</div>
@@ -1019,6 +1045,8 @@ function dashboardPanelHTML(){
       <p class="muted" style="margin-top:-4px;font-size:12.5px;">Priority is calculated from occurrence frequency in the selected period and current action status (in-progress/monitoring, etc.), with suggested next actions by status.</p>
       <div id="focusList"></div>
     </div>
+    </div>
+   </div>
   `;
 }
 
@@ -1214,6 +1242,25 @@ async function refreshVendor(vendor){
 // date that has data across the currently active vendors, in ascending order.
 let dashState = { start:null, end:null };
 let dashDates = [];
+// Slicer filters. Each set holds the EXCLUDED (unchecked) values → empty set = no filter,
+// and new/unseen values default to included. type/cause/aname are row-level; uid/mname
+// are location-level (filter individual occurrences by their Unit ID / machine name).
+const FILTER_FIELDS = ['type','status','cause','aname','mname','uid'];
+const FILTER_LABEL = { type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID' };
+const dashFilters = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set() };
+function anyLocationFilter(){ return dashFilters.uid.size>0 || dashFilters.mname.size>0; }
+function rowExcludedByFilters(row){
+  return dashFilters.type.has(row.machine||'')
+      || dashFilters.status.has(normalizeStatus(row.status) || '(none)')
+      || dashFilters.cause.has(row.cause||'Unknown')
+      || dashFilters.aname.has(row.alarmName||'');
+}
+// Effective count + locations for one daily entry after location-level filters.
+function effEntry(e){
+  if(!anyLocationFilter()) return { count:e.count, locs:e.locations.slice() };
+  const locs = e.locations.filter(l => !dashFilters.uid.has(machinePrefix(l)) && !dashFilters.mname.has(machineName(l)));
+  return { count:locs.length, locs };
+}
 let lastStats = null;   // most recent computeRangeStats result (for chart clicks)
 let lastLocReport = null; // { cause, rangeLabel, rows:[[location,count],...] }
 
@@ -1253,18 +1300,21 @@ function computeRangeStats(vendors, start, end){
   const byCause = {}, locByCause = {}, unspecByCause = {}, unspecTotalByCause = {}, statusByCause = {}, rows = [], dailyMap = {}, causeDailyByCause = {};
   vendors.forEach(v=>{
     (state[v].current.listRows||[]).forEach(row=>{
+      if(rowExcludedByFilters(row)) return;   // row-level slicer filters
       const rowCause = row.cause || 'Unknown';
       let sum = 0; const locs = [];
       (row.daily||[]).forEach(e=>{
         if(inRange(e.date) && e.count>0){
-          sum += e.count; total += e.count;
+          const ef = effEntry(e);            // apply location-level slicer filters
+          if(ef.count<=0) return;
+          sum += ef.count; total += ef.count;
           const k = dkey(e.date);
           if(!dailyMap[k]) dailyMap[k] = { date:e.date, count:0 };
-          dailyMap[k].count += e.count;
+          dailyMap[k].count += ef.count;
           const cd = (causeDailyByCause[rowCause] = causeDailyByCause[rowCause] || {});
           if(!cd[k]) cd[k] = { date:e.date, count:0 };
-          cd[k].count += e.count;
-          e.locations.forEach(l=>locs.push(l));
+          cd[k].count += ef.count;
+          ef.locs.forEach(l=>locs.push(l));
         }
       });
       if(sum>0){
@@ -1508,9 +1558,12 @@ function renderTrendChart(vendors, range){
   let startMs = range && range.start ? range.start.getTime() : null;
   let endMs   = range && range.end   ? range.end.getTime()   : null;
   if(startMs===null || endMs===null){
-    vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>(row.daily||[]).forEach(e=>{
-      if(e.count>0){ const t=e.date.getTime(); if(startMs===null||t<startMs) startMs=t; if(endMs===null||t>endMs) endMs=t; }
-    })));
+    vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>{
+      if(rowExcludedByFilters(row)) return;
+      (row.daily||[]).forEach(e=>{
+        if(effEntry(e).count>0){ const t=e.date.getTime(); if(startMs===null||t<startMs) startMs=t; if(endMs===null||t>endMs) endMs=t; }
+      });
+    }));
   }
   if(startMs===null){
     chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
@@ -1527,9 +1580,13 @@ function renderTrendChart(vendors, range){
   const totals = {};
   vendors.forEach(v=>{
     const map = {};
-    (state[v].current.listRows||[]).forEach(row=>(row.daily||[]).forEach(e=>{
-      if(e.count>0 && inSel(e.date.getTime())){ const b=bucketOf(e.date.getTime()); map[b]=(map[b]||0)+e.count; }
-    }));
+    (state[v].current.listRows||[]).forEach(row=>{
+      if(rowExcludedByFilters(row)) return;
+      (row.daily||[]).forEach(e=>{
+        const c = effEntry(e).count;
+        if(c>0 && inSel(e.date.getTime())){ const b=bucketOf(e.date.getTime()); map[b]=(map[b]||0)+c; }
+      });
+    });
     totals[v] = map;
   });
   const buckets = [];
@@ -1626,29 +1683,80 @@ function renderNarrative(vendors, stats, range){
   `;
 }
 // Populate the From/To date dropdowns from the available data dates.
+function parseDateInput(v){ if(!v) return null; const p=v.split('-').map(Number); return (p.length===3 && !p.some(isNaN)) ? new Date(p[0], p[1]-1, p[2]) : null; }
+function toDateInputValue(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+// Fill the calendar date inputs from the current selection (bounds = available data range).
 function renderDateSelectors(){
-  const selS = document.getElementById('rangeStart'), selE = document.getElementById('rangeEnd');
-  if(!selS || !selE) return;
-  const opts = dashDates.map((d,i)=>`<option value="${i}">${fmtDate(d)}</option>`).join('');
-  selS.innerHTML = opts; selE.innerHTML = opts;
+  const s = document.getElementById('dateStart'), e = document.getElementById('dateEnd');
+  if(!s || !e) return;
   if(dashDates.length){
-    let a = 0, b = dashDates.length-1;
-    if(dashState.start) a = dashDates.findIndex(d=>sameDay(d,dashState.start));
-    if(dashState.end)   b = dashDates.findIndex(d=>sameDay(d,dashState.end));
-    if(a<0) a=0; if(b<0) b=dashDates.length-1;
-    selS.value = String(a); selE.value = String(b);
+    const min = toDateInputValue(dashDates[0]), max = toDateInputValue(dashDates[dashDates.length-1]);
+    s.min = min; s.max = max; e.min = min; e.max = max;
+    const start = dashState.start || dashDates[0];
+    const end   = dashState.end   || dashDates[dashDates.length-1];
+    s.value = toDateInputValue(start);
+    e.value = toDateInputValue(end);
+  } else {
+    s.value = ''; e.value = '';
   }
 }
+// Apply the calendar date inputs to the selected period.
 function applyDateSelectors(){
-  const selS = document.getElementById('rangeStart'), selE = document.getElementById('rangeEnd');
-  if(!selS || !selE || !dashDates.length) return;
-  let a = parseInt(selS.value,10), b = parseInt(selE.value,10);
-  if(isNaN(a)||isNaN(b)) return;
-  if(a>b){ const t=a; a=b; b=t; }   // keep start <= end
-  dashState = { start: dashDates[a], end: dashDates[b] };
+  const s = document.getElementById('dateStart'), e = document.getElementById('dateEnd');
+  if(!s || !e) return;
+  let start = parseDateInput(s.value), end = parseDateInput(e.value);
+  if(!start || !end) return;               // need both dates
+  if(start > end){ const t=start; start=end; end=t; }
+  dashState = { start, end };
   const vendors = activeVendors(document.getElementById('dashVendorFilter')?.value || 'ALL');
   renderDailyChart(vendors);
   renderDashboardBody();
+}
+/* ===================== Slicer filters ===================== */
+function escAttr(s){ return esc(String(s)).replace(/"/g,'&quot;'); }
+function collectFilterValues(vendors){
+  const vals = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set() };
+  vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>{
+    if(row.machine) vals.type.add(String(row.machine));
+    vals.status.add(normalizeStatus(row.status) || '(none)');
+    vals.cause.add(row.cause||'Unknown');
+    if(row.alarmName) vals.aname.add(String(row.alarmName));
+    (row.daily||[]).forEach(e=> e.locations.forEach(l=>{ vals.uid.add(machinePrefix(l)); vals.mname.add(machineName(l)); }));
+  }));
+  return vals;
+}
+function updateFilterSummary(){
+  const el = document.getElementById('filterSummary'); if(!el) return;
+  const active = FILTER_FIELDS.filter(f=>dashFilters[f].size>0);
+  el.textContent = active.length ? `· ${active.map(f=>FILTER_LABEL[f]).join(', ')} filtered` : '· none';
+}
+function renderFilters(vendors){
+  const grid = document.getElementById('filterGrid'); if(!grid) return;
+  if(!vendors.length){ grid.innerHTML = '<span class="muted" style="font-size:12px;">Upload alarm data to enable filters.</span>'; updateFilterSummary(); return; }
+  const vals = collectFilterValues(vendors);
+  grid.innerHTML = FILTER_FIELDS.map(f=>{
+    const list = Array.from(vals[f]).sort((a,b)=>String(a).localeCompare(String(b)));
+    const allChecked = dashFilters[f].size===0;
+    return `<div class="filterbox" data-field="${f}">
+      <div class="ftitle"><span>${FILTER_LABEL[f]}</span><span class="fcount">${list.length}</span></div>
+      <input class="filtersearch" data-field="${f}" placeholder="Search...">
+      <label class="filterall"><input type="checkbox" class="filterall-cb" data-field="${f}" ${allChecked?'checked':''}> (All)</label>
+      <div class="filterlist">
+        ${list.map(val=>{ const s=String(val); return `<label title="${escAttr(s)}"><input type="checkbox" class="filteropt" data-field="${f}" value="${escAttr(s)}" ${dashFilters[f].has(s)?'':'checked'}> ${esc(s)}</label>`; }).join('')}
+      </div>
+    </div>`;
+  }).join('');
+  updateFilterSummary();
+}
+function syncAllCheckbox(f){
+  const cb = document.querySelector(`.filterall-cb[data-field="${f}"]`);
+  if(cb) cb.checked = dashFilters[f].size===0;
+}
+function applyFilterChange(){
+  const vendors = activeVendors(document.getElementById('dashVendorFilter')?.value || 'ALL');
+  renderDailyChart(vendors);
+  renderDashboardBody();
+  updateFilterSummary();
 }
 function renderDashboardBody(){
   const filter = document.getElementById('dashVendorFilter')?.value || 'ALL';
@@ -1695,6 +1803,7 @@ function renderDashboard(){
   if(dashState.start && (!dashDates.length || dashState.start < dashDates[0] || dashState.end > dashDates[dashDates.length-1])){
     dashState = { start:null, end:null };
   }
+  renderFilters(vendors);
   renderDailyChart(vendors);
   renderDashboardBody();
 }
@@ -1734,11 +1843,36 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   document.getElementById('panel-DASH').addEventListener('change', e=>{
     if(e.target.id==='dashVendorFilter'){ dashState={start:null,end:null}; renderDashboard(); }
-    if(e.target.id==='rangeStart' || e.target.id==='rangeEnd'){ applyDateSelectors(); }
+    if(e.target.id==='dateStart' || e.target.id==='dateEnd'){ applyDateSelectors(); }
+    // slicer filter checkboxes
+    if(e.target.classList.contains('filteropt')){
+      const f = e.target.dataset.field, val = e.target.value;
+      if(e.target.checked) dashFilters[f].delete(val); else dashFilters[f].add(val);
+      syncAllCheckbox(f);
+      applyFilterChange();
+    } else if(e.target.classList.contains('filterall-cb')){
+      const f = e.target.dataset.field;
+      const box = e.target.closest('.filterbox');
+      const opts = box.querySelectorAll('.filteropt');
+      dashFilters[f].clear();
+      if(e.target.checked){ opts.forEach(o=>o.checked=true); }
+      else { opts.forEach(o=>{ o.checked=false; dashFilters[f].add(o.value); }); }
+      applyFilterChange();
+    }
+  });
+  document.getElementById('panel-DASH').addEventListener('input', e=>{
+    if(e.target.classList.contains('filtersearch')){
+      const q = e.target.value.toLowerCase();
+      const box = e.target.closest('.filterbox');
+      box.querySelectorAll('.filterlist label').forEach(lb=>{
+        lb.style.display = lb.textContent.toLowerCase().includes(q) ? '' : 'none';
+      });
+    }
   });
   document.getElementById('panel-DASH').addEventListener('click', e=>{
     if(e.target.id==='dashRefresh'){ renderDashboard(); }
     if(e.target.id==='rangeReset'){ dashState={start:null,end:null}; renderDashboard(); }
+    if(e.target.id==='filterClear'){ FILTER_FIELDS.forEach(f=>dashFilters[f].clear()); renderDashboard(); }
     if(e.target.id==='locReportClose'){ document.getElementById('locationReportCard').style.display='none'; }
     if(e.target.id==='locExportCsv'){ exportLocReportCsv(); }
     if(e.target.id==='locExportXlsx'){ exportLocReportXlsx(); }
