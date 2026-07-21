@@ -107,6 +107,14 @@
   .dashside .filtergrid{ grid-template-columns:1fr; }
   .dashside .filterlist{ max-height:150px; }
   @media (max-width:900px){ .dashwrap{ flex-direction:column; } .dashside{ width:100%; position:static; max-height:none; } .dashside .filtergrid{ grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); } }
+  .rangeslider{ position:relative; height:26px; margin:8px 4px 2px; }
+  .rangeslider .track{ position:absolute; top:11px; left:0; right:0; height:4px; background:#dbe3ef; border-radius:2px; }
+  .rangeslider .trackfill{ position:absolute; top:11px; height:4px; background:var(--blue); border-radius:2px; }
+  .rangeslider input[type=range]{ position:absolute; left:0; top:0; width:100%; height:26px; margin:0; background:none; -webkit-appearance:none; appearance:none; pointer-events:none; }
+  .rangeslider input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; pointer-events:auto; width:16px; height:16px; border-radius:50%; background:#fff; border:3px solid var(--blue); cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.3); margin-top:-6px; }
+  .rangeslider input[type=range]::-moz-range-thumb{ pointer-events:auto; width:16px; height:16px; border-radius:50%; background:#fff; border:3px solid var(--blue); cursor:pointer; }
+  .rangeslider input[type=range]::-webkit-slider-runnable-track{ height:4px; background:transparent; }
+  .rangeslider input[type=range]::-moz-range-track{ height:4px; background:transparent; }
 </style>
 </head>
 <body>
@@ -424,6 +432,49 @@ const state = {};
 VENDORS.forEach(v => state[v] = { files: [], current: null });
 const chartInstances = {};
 
+// Per-chart plugin: draws the STACK TOTAL above each stacked bar column.
+const stackTotalPlugin = {
+  id: 'stackTotal',
+  afterDatasetsDraw(chart){
+    const { ctx, scales } = chart;
+    const y = scales.y, x = scales.x;
+    const n = chart.data.labels.length;
+    const totals = new Array(n).fill(0);
+    chart.data.datasets.forEach((ds, di)=>{ if(chart.getDatasetMeta(di).hidden) return; ds.data.forEach((v,i)=>{ totals[i] += (v||0); }); });
+    totals.forEach((t,i)=>{
+      if(!t) return;
+      ctx.save();
+      ctx.fillStyle = '#1f2430';
+      ctx.font = '700 10px "Segoe UI",sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText(t, x.getPixelForValue(i), y.getPixelForValue(t) - 2);
+      ctx.restore();
+    });
+  }
+};
+// Per-chart plugin: draws each bar's value above the bar (add to a chart's `plugins:[...]`).
+const valueLabelsPlugin = {
+  id: 'valueLabels',
+  afterDatasetsDraw(chart){
+    const { ctx } = chart;
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      if(meta.hidden) return;
+      meta.data.forEach((el, i) => {
+        const v = ds.data[i];
+        if(v == null || v === 0) return;
+        ctx.save();
+        ctx.fillStyle = '#1f2430';
+        ctx.font = '700 10px "Segoe UI",sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(v, el.x, el.y - 2);
+        ctx.restore();
+      });
+    });
+  }
+};
+
 // Chart.js plugin: draws the translucent selection rectangle on the daily chart while
 // the user drags. Only acts on a chart that has a `$brush` property set.
 if(window.Chart){
@@ -448,10 +499,10 @@ if(window.Chart){
     }
   });
 }
-// Wire drag selection on the persistent #chartDaily canvas (attached once). Reads the
+// Wire drag selection on the persistent #chartOverview canvas (attached once). Reads the
 // live chart from chartInstances at event time and updates dashState on drag end.
 function setupDailyChartDrag(){
-  const canvas = document.getElementById('chartDaily');
+  const canvas = document.getElementById('chartOverview');
   if(!canvas) return;
   let dragStart = null;
   const idxAt = (chart, clientX)=>{
@@ -460,23 +511,24 @@ function setupDailyChartDrag(){
     return Math.max(0, Math.min(chart.data.labels.length-1, i));
   };
   canvas.addEventListener('mousedown', e=>{
-    const chart = chartInstances['chartDaily']; if(!chart || !dashDates.length) return;
+    const chart = chartInstances['chartOverview']; if(!chart || !dashDates.length) return;
     dragStart = idxAt(chart, e.clientX);
     chart.$brush = { a:dragStart, b:dragStart }; chart.update('none');
   });
   canvas.addEventListener('mousemove', e=>{
-    const chart = chartInstances['chartDaily']; if(!chart || dragStart==null) return;
+    const chart = chartInstances['chartOverview']; if(!chart || dragStart==null) return;
     const j = idxAt(chart, e.clientX);
     chart.$brush = { a:Math.min(dragStart,j), b:Math.max(dragStart,j) }; chart.update('none');
   });
   document.addEventListener('mouseup', e=>{
-    const chart = chartInstances['chartDaily']; if(!chart || dragStart==null) return;
+    const chart = chartInstances['chartOverview']; if(!chart || dragStart==null) return;
     const dates = chart.$dates || dashDates;
     const j = idxAt(chart, e.clientX);
     const a = Math.min(dragStart,j), b = Math.max(dragStart,j);
     dragStart = null;
     if(!dates[a] || !dates[b]) return;
     dashState = { start: dates[a], end: dates[b] };
+    renderOverviewChart(activeVendors());
     renderDailyChart(activeVendors());
     renderDashboardBody();
   });
@@ -994,26 +1046,35 @@ function dashboardPanelHTML(){
         </div>
         <div class="filterbox" style="margin-bottom:12px;">
           <div class="ftitle"><span>📅 Date</span><button class="btn gray sm" id="rangeReset">All</button></div>
-          <label style="font-size:12px;display:block;margin-bottom:6px;">From<br><input type="date" id="dateStart" class="filtersearch" style="margin-bottom:0;"></label>
-          <label style="font-size:12px;display:block;">To<br><input type="date" id="dateEnd" class="filtersearch" style="margin-bottom:0;"></label>
-          <div class="muted" style="font-size:11px;margin-top:6px;">Selected: <span id="rangeLabel" style="color:#1d4ed8;font-weight:700;">All</span></div>
+          <label style="font-size:11px;display:block;">From<input type="date" id="dateStart" class="filtersearch" style="margin:2px 0 6px;width:100%;max-width:100%;"></label>
+          <label style="font-size:11px;display:block;">To<input type="date" id="dateEnd" class="filtersearch" style="margin:2px 0 0;width:100%;max-width:100%;"></label>
+          <div class="rangeslider" id="dateSlider">
+            <div class="track"></div>
+            <div class="trackfill" id="dateFill"></div>
+            <input type="range" id="sliderStart" min="0" max="0" value="0" step="1">
+            <input type="range" id="sliderEnd" min="0" max="0" value="0" step="1">
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:2px;">Selected: <span id="rangeLabel" style="color:#1d4ed8;font-weight:700;">All</span></div>
         </div>
         <div class="filtergrid" id="filterGrid"></div>
       </div>
     </aside>
     <div class="dashmain">
     <div class="card">
-      <h3>■ Daily Alarm Count <span class="muted" style="font-size:11.5px;font-weight:400;">— pick dates in the 📅 Date filter, or drag across the bars</span></h3>
-      <div class="chartbox" style="height:200px;"><canvas id="chartDaily"></canvas></div>
+      <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <span>■ Daily Alarm Count <span class="muted" style="font-size:11.5px;font-weight:400;">— selected period; set range in the 📅 Date filter</span></span>
+        <button class="btn secondary sm" id="expDaily">⬇ Excel</button>
+      </h3>
+      <div class="chartbox" style="height:220px;"><canvas id="chartDaily"></canvas></div>
     </div>
     <div class="card" id="narrativeBox">Loading data...</div>
     <div class="kpis" id="kpiRow"></div>
     <div class="grid2">
-      <div class="card"><h3>■ Alarm Occurrence by Cause (selected period)</h3>
+      <div class="card"><h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Alarm Occurrence by Cause (selected period)</span><button class="btn secondary sm" id="expCause">⬇ Excel</button></h3>
         <p class="muted" style="margin-top:-6px;font-size:11.5px;">Click a bar to see where (locations) that cause occurred.</p>
-        <div class="chartbox"><canvas id="chartCause"></canvas></div>
+        <div class="chartbox" style="height:280px;"><canvas id="chartCause"></canvas></div>
         <div id="causePct" style="margin-top:8px;line-height:1.9;"></div></div>
-      <div class="card"><h3>■ Improvement Status by Cause</h3><div class="chartbox"><canvas id="chartImprove"></canvas></div></div>
+      <div class="card"><h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Improvement Status by Cause</span><button class="btn secondary sm" id="expImprove">⬇ Excel</button></h3><div class="chartbox" style="height:280px;"><canvas id="chartImprove"></canvas></div></div>
     </div>
     <div class="card" id="locationReportCard" style="display:none;">
       <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -1031,11 +1092,22 @@ function dashboardPanelHTML(){
       <div id="locReportBody"></div>
     </div>
     <div class="grid2">
-      <div class="card"><h3>■ Weekly Alarm Total Trend (Sun–Sat weeks)</h3><div class="chartbox"><canvas id="chartTrend"></canvas></div></div>
-      <div class="card" id="vendorCompareCard"><h3>■ Alarm Comparison by Vendor (selected period)</h3><div class="chartbox"><canvas id="chartVendor"></canvas></div></div>
+      <div class="card" id="vendorCauseCard"><h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Alarm by Vendor &amp; Cause (selected period)</span><button class="btn secondary sm" id="expVendorCause">⬇ Excel</button></h3><div class="chartbox" style="height:300px;"><canvas id="chartVendorCause"></canvas></div></div>
+      <div class="card" id="vendorStatusCard"><h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Alarm by Vendor &amp; Status (selected period)</span><button class="btn secondary sm" id="expVendorStatus">⬇ Excel</button></h3><div class="chartbox" style="height:300px;"><canvas id="chartVendorStatus"></canvas></div></div>
     </div>
     <div class="card">
-      <h3>■ Top Alarm Cases (selected period)</h3>
+      <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Daily Alarm Trend by Vendor (selected period)</span><button class="btn secondary sm" id="expTrend">⬇ Excel</button></h3>
+      <div class="chartbox" style="height:240px;"><canvas id="chartTrend"></canvas></div>
+    </div>
+    <div class="card">
+      <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <span>■ Top 10 Alarms (selected period)</span>
+        <span style="display:flex;gap:6px;align-items:center;">
+          <button class="btn sm" id="topModeCase" data-mode="case">By case</button>
+          <button class="btn secondary sm" id="topModeAlarm" data-mode="alarm">By alarm name</button>
+          <button class="btn secondary sm" id="expTop">⬇ Excel</button>
+        </span>
+      </h3>
       <div id="top5Table"></div>
     </div>
     <div class="card">
@@ -1261,6 +1333,9 @@ function effEntry(e){
 }
 let lastStats = null;   // most recent computeRangeStats result (for chart clicks)
 let lastLocReport = null; // { cause, rangeLabel, rows:[[location,count],...] }
+let lastTrend = null;     // { rows:[[period,...vendorTotals]] } for export
+let lastTop = null;       // { header:[], rows:[[]] } for export
+let topMode = 'case';     // 'case' = per alarm case, 'alarm' = aggregated by alarm name
 
 // Vendors (OEM) chosen via the sidebar checkboxes. Starts with all selected.
 const selectedVendors = new Set(VENDORS);
@@ -1269,6 +1344,13 @@ function activeVendors(){
   return VENDORS.filter(v => selectedVendors.has(v) && state[v] && state[v].current);
 }
 function destroyChart(id){ if(chartInstances[id]){ chartInstances[id].destroy(); delete chartInstances[id]; } }
+// Round a value up to a "nice" axis maximum so two charts can share the same Y scale.
+function niceMax(v){
+  if(!(v>0)) return 10;
+  if(v<=1000) return Math.ceil(v/100)*100;
+  if(v<=5000) return Math.ceil(v/500)*500;
+  return Math.ceil(v/1000)*1000;
+}
 function dkey(d){ return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`; }
 function causeColor(cause){ const i = CAUSE_LIST.indexOf(cause); return i>=0 ? CAUSE_COLORS[i] : '#9ca3af'; }
 function sameDay(a,b){ return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
@@ -1297,11 +1379,12 @@ function computeRangeStats(vendors, start, end){
   // (or just "observedIssue" for unspecified) → count, so the location report can show
   // the Observed Issue / Cause text alongside each location.
   const SEP = '';
-  const byCause = {}, locByCause = {}, unspecByCause = {}, unspecTotalByCause = {}, statusByCause = {}, rows = [], dailyMap = {}, causeDailyByCause = {};
+  const byCause = {}, locByCause = {}, unspecByCause = {}, unspecTotalByCause = {}, statusByCause = {}, rows = [], dailyMap = {}, causeDailyByCause = {}, statusDailyByStatus = {};
   vendors.forEach(v=>{
     (state[v].current.listRows||[]).forEach(row=>{
       if(rowExcludedByFilters(row)) return;   // row-level slicer filters
       const rowCause = row.cause || 'Unknown';
+      const rowStatus = normalizeStatus(row.status) || '(none)';
       let sum = 0; const locs = [];
       (row.daily||[]).forEach(e=>{
         if(inRange(e.date) && e.count>0){
@@ -1314,30 +1397,36 @@ function computeRangeStats(vendors, start, end){
           const cd = (causeDailyByCause[rowCause] = causeDailyByCause[rowCause] || {});
           if(!cd[k]) cd[k] = { date:e.date, count:0 };
           cd[k].count += ef.count;
+          const sd = (statusDailyByStatus[rowStatus] = statusDailyByStatus[rowStatus] || {});
+          if(!sd[k]) sd[k] = { date:e.date, count:0 };
+          sd[k].count += ef.count;
           ef.locs.forEach(l=>locs.push(l));
         }
       });
       if(sum>0){
         const cause = row.cause || 'Unknown';
         const issue = (row.observedIssue != null ? String(row.observedIssue).trim() : '');
+        const st = normalizeStatus(row.status) || '(none)';
         byCause[cause] = (byCause[cause]||0) + sum;
-        const lo = (locByCause[cause] = locByCause[cause] || {});   // real locations, keyed by loc+issue
-        locs.forEach(l=>{ const key = l + SEP + issue; lo[key] = (lo[key]||0) + 1; });
+        // location keys carry status + observed issue so the report can show them per row.
+        const lo = (locByCause[cause] = locByCause[cause] || {});
+        locs.forEach(l=>{ const key = l + SEP + st + SEP + issue; lo[key] = (lo[key]||0) + 1; });
         const unspec = sum - locs.length;   // occurrences with no recorded location
         if(unspec>0){
           unspecTotalByCause[cause] = (unspecTotalByCause[cause]||0) + unspec;
           const ui = (unspecByCause[cause] = unspecByCause[cause] || {});
-          const key = SEP + issue;
+          const key = SEP + st + SEP + issue;
           ui[key] = (ui[key]||0) + unspec;
         }
-        const st = normalizeStatus(row.status);
-        if(st){ statusByCause[cause] = statusByCause[cause] || {}; statusByCause[cause][st] = (statusByCause[cause][st]||0) + 1; }
-        rows.push({ vendor:v, row, sum });
+        // Status split by OCCURRENCE count (so it matches the "by cause" occurrence totals).
+        statusByCause[cause] = statusByCause[cause] || {};
+        statusByCause[cause][st] = (statusByCause[cause][st]||0) + sum;
+        rows.push({ vendor:v, row, sum, status:st });
       }
     });
   });
   const dailyTotals = Object.values(dailyMap).sort((a,b)=>a.date-b.date);
-  return { total, byCause, locByCause, unspecByCause, unspecTotalByCause, statusByCause, causeDailyByCause, rows, dailyTotals, start, end, SEP };
+  return { total, byCause, locByCause, unspecByCause, unspecTotalByCause, statusByCause, causeDailyByCause, statusDailyByStatus, rows, dailyTotals, start, end, SEP };
 }
 // Total for the equally-long window immediately preceding [start,end] (for the delta KPI).
 function prevPeriodTotal(vendors, start, end){
@@ -1395,13 +1484,47 @@ function renderDailyChart(vendors){
     data:{ labels, datasets:[{ label:'Alarms/day', data, backgroundColor:'#93c5fd', borderColor:'#2563eb', borderWidth:1 }] },
     options:{
       responsive:true, maintainAspectRatio:false,
+      layout:{ padding:{ top:16 } },
       plugins:{ legend:{display:false}, tooltip:{ callbacks:{ title:(it)=>labels[it[0].dataIndex] } } },
       scales:{ y:{ beginAtZero:true } }
-    }
+    },
+    plugins:[valueLabelsPlugin]
   });
   chart.$dates = dates;   // the drag handler maps pixels → these dates
   chart.update('none');
   chartInstances['chartDaily'] = chart;
+}
+
+// Small overview chart across the FULL data period; you drag on it to pick a range.
+// The current selection is highlighted via the brush overlay.
+function renderOverviewChart(vendors){
+  destroyChart('chartOverview');
+  const canvas = document.getElementById('chartOverview');
+  if(!canvas || !dashDates.length) return;
+  const full = computeRangeStats(vendors, dashDates[0], dashDates[dashDates.length-1]);
+  const totalByKey = {}; full.dailyTotals.forEach(d=>{ totalByKey[dkey(d.date)] = d.count; });
+  const labels = dashDates.map(d=>fmtDate(d));
+  const data = dashDates.map(d=> totalByKey[dkey(d)] || 0);
+  const chart = new Chart(canvas, {
+    type:'bar',
+    data:{ labels, datasets:[{ label:'Alarms/day', data, backgroundColor:'#c7d7f5', borderColor:'#93c5fd', borderWidth:1 }] },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ title:(it)=>labels[it[0].dataIndex] } } },
+      scales:{ x:{ ticks:{ maxTicksLimit:12, font:{size:9} } }, y:{ display:false, beginAtZero:true } }
+    }
+  });
+  chart.$dates = dashDates;
+  // highlight the current selection
+  if(dashState.start && dashState.end){
+    const a = dashDates.findIndex(d=>sameDay(d, dashState.start));
+    const b = dashDates.findIndex(d=>sameDay(d, dashState.end));
+    if(a>=0 && b>=0) chart.$brush = { a:Math.min(a,b), b:Math.max(a,b) };
+  } else {
+    chart.$brush = { a:0, b:dashDates.length-1 };
+  }
+  chart.update('none');
+  chartInstances['chartOverview'] = chart;
 }
 
 function renderCauseCharts(vendors, stats){
@@ -1411,6 +1534,7 @@ function renderCauseCharts(vendors, stats){
   const labels = present, vals = present.map(c=>stats.byCause[c]);
   const colors = present.map(causeColor);
   const total = vals.reduce((a,b)=>a+b,0) || 1;
+  const yMax = niceMax(Math.max(0, ...Object.values(stats.byCause)));
   const clickHandler = (evt, els)=>{ if(els.length){ showLocationReport(labels[els[0].index]); } };
 
   destroyChart('chartCause');
@@ -1418,8 +1542,10 @@ function renderCauseCharts(vendors, stats){
     type:'bar',
     data:{ labels, datasets:[{ label:'Alarms', data:vals, backgroundColor:colors }] },
     options:{ responsive:true, maintainAspectRatio:false, onClick:clickHandler,
+      layout:{ padding:{ top:16 } },
       plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:(it)=>`${it.parsed.y} alarms (${Math.round(it.parsed.y/total*100)}%)` } } },
-      scales:{ y:{ beginAtZero:true } } }
+      scales:{ y:{ beginAtZero:true, max:yMax, ticks:{ stepSize: yMax/4 } } } },
+    plugins:[valueLabelsPlugin]
   });
 
   // Per-cause percentage breakdown (replaces the old horizontal share chart).
@@ -1435,14 +1561,29 @@ function renderCauseCharts(vendors, stats){
 }
 
 function renderImproveChart(vendors, stats){
-  const statuses = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
-  const causes = CAUSE_LIST.filter(c => stats.statusByCause[c]);
+  // On-Going first = drawn at the BOTTOM of each stacked bar.
+  const KNOWN = ['On-Going','Monitoring','Unavoidable','Operational','Completed'];
+  const causes = CAUSE_LIST.filter(c => stats.statusByCause[c])
+    .concat(Object.keys(stats.statusByCause).filter(c=>!CAUSE_LIST.includes(c)));
+  // Include every status actually present (so stacked totals equal the cause occurrence totals).
+  const extra = new Set();
+  causes.forEach(c=> Object.keys(stats.statusByCause[c]||{}).forEach(s=>{ if(!KNOWN.includes(s)) extra.add(s); }));
+  const statuses = KNOWN.concat(Array.from(extra));
   const totals = {}; statuses.forEach(s=>totals[s]=causes.map(c=> stats.statusByCause[c]?.[s] || 0));
+  const improveMax = niceMax(Math.max(0, ...Object.values(stats.byCause)));
+  const statusColor = s => STATUS_COLOR[s] || (s==='(none)' ? '#cbd5e1' : '#9ca3af');
   destroyChart('chartImprove');
   chartInstances['chartImprove'] = new Chart(document.getElementById('chartImprove'), {
     type:'bar',
-    data:{ labels:causes, datasets: statuses.map(s=>({ label:s, data:totals[s], backgroundColor: STATUS_COLOR[s] || '#9ca3af' })) },
-    options:{ responsive:true, maintainAspectRatio:false, scales:{ x:{stacked:true}, y:{stacked:true, beginAtZero:true} } }
+    data:{ labels:causes, datasets: statuses.map(s=>({ label:s, data:totals[s], backgroundColor: statusColor(s) })) },
+    options:{ responsive:true, maintainAspectRatio:false,
+      layout:{ padding:{ top:16 } },
+      interaction:{ mode:'index', intersect:false },
+      plugins:{ legend:{ position:'bottom', labels:{ boxWidth:11, font:{size:10} } }, tooltip:{ mode:'index', intersect:false, callbacks:{
+        label:(it)=>{ const causeTotal = statuses.reduce((a,s)=>a+(totals[s][it.dataIndex]||0),0)||1; const v=it.parsed.y; if(!v) return null; return `${it.dataset.label}: ${v} (${Math.round(v/causeTotal*100)}%)`; }
+      } } },
+      scales:{ x:{stacked:true}, y:{stacked:true, beginAtZero:true, max: improveMax, ticks:{ stepSize: improveMax/4 } } } },
+    plugins:[stackTotalPlugin]
   });
 }
 
@@ -1452,27 +1593,29 @@ function showLocationReport(cause){
   const SEP = lastStats.SEP || '';
   const locObj = lastStats.locByCause[cause] || {};
   const unspecTotal = lastStats.unspecTotalByCause?.[cause] || 0;
-  // Each row: [unitId, machineCode, machineName, cause, observedIssue, count]
-  const realEntries = Object.entries(locObj);
-  let rows, note = '';
-  if(realEntries.length){
-    // We have recorded locations → show them. Occurrences with no location are excluded
-    // (they came from dates before location logging started) with a footnote.
-    rows = realEntries.map(([key,count])=>{
-      const si = key.indexOf(SEP);
-      const loc = si>=0 ? key.slice(0,si) : key;
-      const issue = si>=0 ? key.slice(si+SEP.length) : '';
-      return [loc, machinePrefix(loc), machineName(loc), cause, issue, count];
-    }).sort((a,b)=>b[5]-a[5]);
-    if(unspecTotal>0) note = `${unspecTotal} occurrence(s) in this period had no recorded location and are excluded from the table.`;
-  } else {
-    // No recorded locations at all in this period → list by observed issue as unspecified.
-    const ui = lastStats.unspecByCause?.[cause] || {};
-    rows = Object.entries(ui).map(([key,count])=>{
-      const issue = key.indexOf(SEP)>=0 ? key.slice(key.indexOf(SEP)+SEP.length) : '';
-      return ['(unspecified)','','(no location recorded)',cause,issue,count];
-    }).sort((a,b)=>b[5]-a[5]);
-  }
+  // key = location + SEP + status + SEP + issue.  Row: [unitId, code, name, cause, status, issue, count]
+  const splitKey = key => {
+    const p1 = key.indexOf(SEP);
+    const loc = p1>=0 ? key.slice(0,p1) : key;
+    const rest = p1>=0 ? key.slice(p1+SEP.length) : '';
+    const p2 = rest.indexOf(SEP);
+    const status = p2>=0 ? rest.slice(0,p2) : rest;
+    const issue = p2>=0 ? rest.slice(p2+SEP.length) : '';
+    return { loc, status, issue };
+  };
+  // Include BOTH located rows AND unspecified rows so the table totals the full cause count.
+  const realRows = Object.entries(locObj).map(([key,count])=>{ const {loc,status,issue}=splitKey(key); return [loc, machinePrefix(loc), machineName(loc), cause, status, issue, count]; });
+  const unspecRows = Object.entries(lastStats.unspecByCause?.[cause] || {}).map(([key,count])=>{ const {status,issue}=splitKey(key); return ['(unspecified)','','(no location recorded)',cause,status,issue,count]; });
+  const rows = realRows.concat(unspecRows).sort((a,b)=>b[6]-a[6]);
+  const note = unspecTotal>0 ? `${unspecTotal} of these occurrence(s) have no recorded equipment location (shown as “(unspecified)”).` : '';
+  // status summary (by occurrence count) for this cause, with percentages
+  const statusAgg = {};
+  rows.forEach(r=>{ statusAgg[r[4]] = (statusAgg[r[4]]||0) + r[6]; });
+  const statusTotal = rows.reduce((a,r)=>a+r[6],0) || 1;
+  const statusOrder = ['On-Going','Monitoring','Unavoidable','Operational','Completed','(none)'];
+  const statusSummary = Object.entries(statusAgg)
+    .sort((a,b)=> (statusOrder.indexOf(a[0])+100*(statusOrder.indexOf(a[0])<0)) - (statusOrder.indexOf(b[0])+100*(statusOrder.indexOf(b[0])<0)))
+    .map(([s,n])=>`<span style="display:inline-block;margin-right:10px;"><span class="badge" style="background:${STATUS_COLOR[s]||'#9ca3af'}">${esc(s)}</span> <b>${n}</b> <span class="muted">(${Math.round(n/statusTotal*100)}%)</span></span>`).join('');
   const rangeLabel = (lastStats.start && lastStats.end) ? `${fmtDate(lastStats.start)} ~ ${fmtDate(lastStats.end)}` : 'All';
   lastLocReport = { cause, rangeLabel, rows };
   const card = document.getElementById('locationReportCard');
@@ -1481,12 +1624,15 @@ function showLocationReport(cause){
   if(!rows.length){
     body.innerHTML = '<p class="empty">No location data for this cause in the selected period.</p>';
   } else {
-    const total = rows.reduce((a,r)=>a+r[5],0);
+    const total = rows.reduce((a,r)=>a+r[6],0);
     const clip = s => { s = String(s||''); return s.length>160 ? s.slice(0,160)+'…' : s; };
-    body.innerHTML = `${note?`<p class="muted" style="margin-top:0;font-size:12px;">ℹ ${esc(note)}</p>`:''}<div class="tablewrap" style="max-height:400px;"><table>
-      <thead><tr><th style="width:40px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th>Cause</th><th style="min-width:260px;">Observed Issue / Cause</th><th style="width:70px;">Count</th><th style="width:70px;">Share</th></tr></thead>
-      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td style="white-space:pre-wrap;" title="${esc(r[4])}">${esc(clip(r[4]))}</td><td class="num">${r[5]}</td><td class="num">${Math.round(r[5]/total*100)}%</td></tr>`).join('')}
-      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="5">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
+    body.innerHTML = `
+      <div style="margin-bottom:8px;font-size:12.5px;"><b>Status:</b> ${statusSummary||'-'}</div>
+      ${note?`<p class="muted" style="margin-top:0;font-size:12px;">ℹ ${esc(note)}</p>`:''}
+      <div class="tablewrap" style="max-height:400px;"><table>
+      <thead><tr><th style="width:40px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th>Cause</th><th style="width:90px;">Status</th><th style="min-width:240px;">Observed Issue / Cause</th><th style="width:64px;">Count</th><th style="width:64px;">Share</th></tr></thead>
+      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${statusBadge(r[4])}</td><td style="white-space:pre-wrap;" title="${esc(r[5])}">${esc(clip(r[5]))}</td><td class="num">${r[6]}</td><td class="num">${Math.round(r[6]/total*100)}%</td></tr>`).join('')}
+      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="6">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
   }
   renderCauseDailyChart(cause);
   card.style.display = '';
@@ -1518,28 +1664,79 @@ function locReportFilenameBase(){
   const r = (lastLocReport?.rangeLabel || '').replace(/[^\w]+/g,'');
   return `location_report_${c}_${r}`;
 }
+const LOC_HEADER = ['Unit ID','Machine Code','Machine Name','Cause','Status','Observed Issue / Cause','Alarm Count'];
 function exportLocReportCsv(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
-  const header = ['Unit ID','Machine Code','Machine Name','Cause','Observed Issue / Cause','Alarm Count'];
-  const lines = [header, ...lastLocReport.rows];
+  const lines = [LOC_HEADER, ...lastLocReport.rows];
   const csv = '﻿' + lines.map(row=>row.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download=locReportFilenameBase()+'.csv';
-  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  downloadBlob(csv, 'text/csv;charset=utf-8;', locReportFilenameBase()+'.csv');
 }
 function exportLocReportXlsx(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
   const aoa = [
     ['Cause', lastLocReport.cause], ['Period', lastLocReport.rangeLabel], [],
-    ['Unit ID','Machine Code','Machine Name','Cause','Observed Issue / Cause','Alarm Count'],
-    ...lastLocReport.rows
+    LOC_HEADER, ...lastLocReport.rows
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{wch:22},{wch:16},{wch:32},{wch:16},{wch:60},{wch:12}];
+  ws['!cols'] = [{wch:22},{wch:16},{wch:32},{wch:16},{wch:12},{wch:60},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Location Report');
   XLSX.writeFile(wb, locReportFilenameBase()+'.xlsx');
+}
+// ---- generic export helpers (used by chart / top-alarm download buttons) ----
+function downloadBlob(content, type, filename){
+  const blob = new Blob([content], {type});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+function exportAoaXlsx(aoa, sheetName, filename, cols){
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  if(cols) ws['!cols'] = cols;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX.writeFile(wb, filename);
+}
+function rangeTag(){
+  return (lastStats && lastStats.start) ? `${fmtDate(lastStats.start)}-${fmtDate(lastStats.end)}`.replace(/\//g,'') : 'all';
+}
+function exportDailyXlsx(){
+  if(!lastStats) return;
+  const aoa = [['Date','Alarms'], ...lastStats.dailyTotals.map(d=>[fmtDateFull(d.date), d.count])];
+  exportAoaXlsx(aoa, 'Daily', `daily_alarms_${rangeTag()}.xlsx`, [{wch:14},{wch:10}]);
+}
+function exportCauseXlsx(){
+  if(!lastStats) return;
+  const tot = Object.values(lastStats.byCause).reduce((a,b)=>a+b,0)||1;
+  const rows = Object.entries(lastStats.byCause).sort((a,b)=>b[1]-a[1]);
+  const aoa = [['Cause','Alarms','Share %'], ...rows.map(([c,n])=>[c,n,Math.round(n/tot*100)])];
+  exportAoaXlsx(aoa, 'By Cause', `alarms_by_cause_${rangeTag()}.xlsx`, [{wch:20},{wch:10},{wch:10}]);
+}
+function exportImproveXlsx(){
+  if(!lastStats) return;
+  const sbc = lastStats.statusByCause;
+  const causes = Object.keys(sbc);
+  const statuses = ['Unavoidable','Operational','On-Going','Monitoring','Completed'];
+  const extra = new Set(); causes.forEach(c=>Object.keys(sbc[c]).forEach(s=>{ if(!statuses.includes(s)) extra.add(s); }));
+  const cols = statuses.concat(Array.from(extra));
+  const aoa = [['Cause', ...cols, 'Total'], ...causes.map(c=>{ const row=[c]; let t=0; cols.forEach(s=>{ const n=sbc[c][s]||0; row.push(n); t+=n; }); row.push(t); return row; })];
+  exportAoaXlsx(aoa, 'Improvement', `improvement_by_cause_${rangeTag()}.xlsx`, [{wch:20}].concat(cols.map(()=>({wch:12})),[{wch:10}]));
+}
+function exportTrendXlsx(){
+  if(!lastTrend || !lastTrend.rows.length) return;
+  exportAoaXlsx(lastTrend.rows, 'Daily Trend', `daily_trend_vendor_${rangeTag()}.xlsx`);
+}
+function exportVendorCauseXlsx(){
+  if(!window.lastVendorCause || !window.lastVendorCause.rows.length) return;
+  exportAoaXlsx(window.lastVendorCause.rows, 'Vendor x Cause', `vendor_by_cause_${rangeTag()}.xlsx`);
+}
+function exportVendorStatusXlsx(){
+  if(!window.lastVendorStatus || !window.lastVendorStatus.rows.length) return;
+  exportAoaXlsx(window.lastVendorStatus.rows, 'Vendor x Status', `vendor_by_status_${rangeTag()}.xlsx`);
+}
+function exportTopXlsx(){
+  if(!lastTop || !lastTop.rows.length) return;
+  exportAoaXlsx([lastTop.header, ...lastTop.rows], 'Top Alarms', `top_alarms_${rangeTag()}.xlsx`);
 }
 // Sunday of the calendar week containing d (weeks run Sunday→Saturday).
 function weekSunday(d){
@@ -1547,86 +1744,149 @@ function weekSunday(d){
   s.setDate(s.getDate() - s.getDay());   // getDay(): 0=Sun
   return s;
 }
-// Weekly trend in consecutive 7-day buckets starting from the SELECTED period's start date.
-// bucket 0 = start..start+6, bucket 1 = start+7..start+13, ... The final bucket is clamped
-// to the selected end date, so selecting 7/5~7/17 gives 7/5~7/11 (7d) then 7/12~7/17 (6d).
-// X-axis labels show each bucket's actual date span.
+// Daily alarm trend per vendor across the selected period (one line per vendor).
 function renderTrendChart(vendors, range){
   destroyChart('chartTrend');
-  const DAY = 86400000;
-  // Fall back to full data span if no explicit selection.
-  let startMs = range && range.start ? range.start.getTime() : null;
-  let endMs   = range && range.end   ? range.end.getTime()   : null;
-  if(startMs===null || endMs===null){
-    vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>{
-      if(rowExcludedByFilters(row)) return;
-      (row.daily||[]).forEach(e=>{
-        if(effEntry(e).count>0){ const t=e.date.getTime(); if(startMs===null||t<startMs) startMs=t; if(endMs===null||t>endMs) endMs=t; }
-      });
-    }));
-  }
-  if(startMs===null){
+  // Dates to plot = the data dates within the selected range (union across vendors).
+  const inRange = d => (!range || !range.start || (d>=range.start && d<=range.end));
+  const dateSet = new Map();
+  vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>{
+    if(rowExcludedByFilters(row)) return;
+    (row.daily||[]).forEach(e=>{ if(effEntry(e).count>0 && inRange(e.date)) dateSet.set(dkey(e.date), e.date); });
+  }));
+  const dates = Array.from(dateSet.values()).sort((a,b)=>a-b);
+  if(!dates.length){
     chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
       type:'line', data:{labels:[], datasets:[]},
       options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true, text:'No data yet.'}}}
     });
     return;
   }
-  const base = new Date(startMs); base.setHours(0,0,0,0);
-  const baseMs = base.getTime();
-  const nBuckets = Math.floor((endMs - baseMs)/(7*DAY)) + 1;
-  const inSel = t => t>=baseMs && t<=endMs;
-  const bucketOf = t => Math.floor((t - baseMs)/(7*DAY));
-  const totals = {};
+  const totals = {};   // vendor -> { dkey -> count }
   vendors.forEach(v=>{
     const map = {};
     (state[v].current.listRows||[]).forEach(row=>{
       if(rowExcludedByFilters(row)) return;
-      (row.daily||[]).forEach(e=>{
-        const c = effEntry(e).count;
-        if(c>0 && inSel(e.date.getTime())){ const b=bucketOf(e.date.getTime()); map[b]=(map[b]||0)+c; }
-      });
+      (row.daily||[]).forEach(e=>{ const c=effEntry(e).count; if(c>0 && inRange(e.date)) map[dkey(e.date)] = (map[dkey(e.date)]||0)+c; });
     });
     totals[v] = map;
   });
-  const buckets = [];
-  for(let b=0;b<nBuckets;b++) buckets.push(b);
-  const labels = buckets.map(b=>{
-    const s = new Date(baseMs + b*7*DAY);
-    let eMs = baseMs + (b*7+6)*DAY;
-    if(eMs > endMs) eMs = endMs;   // clamp the last (possibly shorter) bucket
-    const e = new Date(eMs);
-    return `${s.getMonth()+1}/${s.getDate()}~${e.getMonth()+1}/${e.getDate()}`;
-  });
+  const labels = dates.map(fmtDate);
   const datasets = vendors.map(v=>({
-    label:v, data: buckets.map(b=> totals[v][b] ?? null),
+    label:v, data: dates.map(d=> totals[v][dkey(d)] ?? null),
     borderColor: VENDOR_COLOR[v], backgroundColor: VENDOR_COLOR[v], spanGaps:true, tension:.25
   }));
+  // capture for Excel export
+  lastTrend = { rows: [['Date', ...vendors, 'Total'], ...dates.map(d=>{
+    const per = vendors.map(v=> totals[v][dkey(d)] || 0);
+    return [fmtDateFull(d), ...per, per.reduce((a,x)=>a+x,0)];
+  })] };
   chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
     type:'line', data:{labels, datasets},
-    options:{responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true}}}
+    options:{responsive:true, maintainAspectRatio:false, plugins:{ tooltip:{ mode:'index', intersect:false } }, scales:{y:{beginAtZero:true}}}
   });
 }
-function renderVendorCompareChart(vendors, range){
-  const card = document.getElementById('vendorCompareCard');
-  // Only meaningful when comparing more than one vendor.
-  if(!vendors || vendors.length<2){ card.style.display='none'; return; }
-  card.style.display='';
-  const labels = vendors;
-  const data = vendors.map(v => computeRangeStats([v], range.start, range.end).total);
-  destroyChart('chartVendor');
-  chartInstances['chartVendor'] = new Chart(document.getElementById('chartVendor'), {
-    type:'bar',
-    data:{ labels, datasets:[{ label:'Alarms (period)', data, backgroundColor: labels.map(v=>VENDOR_COLOR[v]) }] },
-    options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } }
+// Generic daily multi-line chart. seriesMap: { key -> { dkey -> {date,count} } }. colorFn(key)->color.
+// Stores the aoa in a target export slot. Returns nothing.
+function renderDailyMultiLine(canvasId, seriesMap, colorFn, exportSlot, keyHeader){
+  destroyChart(canvasId);
+  const dateSet = new Map();
+  Object.values(seriesMap).forEach(m => Object.values(m).forEach(o=>{ if(o.count>0) dateSet.set(dkey(o.date), o.date); }));
+  const dates = Array.from(dateSet.values()).sort((a,b)=>a-b);
+  const keys = Object.keys(seriesMap).filter(k => Object.values(seriesMap[k]).some(o=>o.count>0));
+  if(!dates.length || !keys.length){
+    chartInstances[canvasId] = new Chart(document.getElementById(canvasId), {
+      type:'line', data:{labels:[], datasets:[]},
+      options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true,text:'No data.'}}}
+    });
+    if(exportSlot) window[exportSlot] = null;
+    return;
+  }
+  const labels = dates.map(fmtDate);
+  const datasets = keys.map(k=>({
+    label:k, data: dates.map(d=> seriesMap[k][dkey(d)]?.count ?? null),
+    borderColor: colorFn(k), backgroundColor: colorFn(k), spanGaps:true, tension:.25
+  }));
+  if(exportSlot){
+    window[exportSlot] = { rows: [[keyHeader, ...keys, 'Total'], ...dates.map(d=>{
+      const per = keys.map(k=> seriesMap[k][dkey(d)]?.count || 0);
+      return [fmtDateFull(d), ...per, per.reduce((a,x)=>a+x,0)];
+    })] };
+  }
+  chartInstances[canvasId] = new Chart(document.getElementById(canvasId), {
+    type:'line', data:{labels, datasets},
+    options:{responsive:true, maintainAspectRatio:false, plugins:{ tooltip:{ mode:'index', intersect:false } }, scales:{y:{beginAtZero:true}}}
+  });
+}
+function renderTrendByCause(stats){
+  renderDailyMultiLine('chartTrendCause', stats.causeDailyByCause || {}, causeColor, 'lastTrendCause', 'Date');
+}
+function renderTrendByStatus(stats){
+  const colorFn = s => STATUS_COLOR[s] || (s==='(none)'?'#cbd5e1':'#9ca3af');
+  renderDailyMultiLine('chartTrendStatus', stats.statusDailyByStatus || {}, colorFn, 'lastTrendStatus', 'Date');
+}
+// Stacked bar: x = vendors, stacked by cause. Stores export aoa in window.lastVendorCause.
+function renderVendorByCause(vendors, range){
+  destroyChart('chartVendorCause');
+  const per = vendors.map(v => computeRangeStats([v], range.start, range.end));
+  const causes = CAUSE_LIST.filter(c => per.some(s=>s.byCause[c]>0))
+    .concat(Object.keys(Object.assign({}, ...per.map(s=>s.byCause))).filter(c=>!CAUSE_LIST.includes(c)));
+  const yMax = niceMax(Math.max(0, ...per.map(s=>s.total)));
+  const datasets = causes.map(c=>({ label:c, data: per.map(s=>s.byCause[c]||0), backgroundColor: causeColor(c) }));
+  window.lastVendorCause = { rows: [['Vendor', ...causes, 'Total'], ...vendors.map((v,i)=>{ const r=causes.map(c=>per[i].byCause[c]||0); return [v, ...r, r.reduce((a,x)=>a+x,0)]; })] };
+  chartInstances['chartVendorCause'] = new Chart(document.getElementById('chartVendorCause'), {
+    type:'bar', data:{ labels:vendors, datasets },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{padding:{top:16}},
+      interaction:{mode:'index',intersect:false},
+      plugins:{ legend:{position:'bottom', labels:{boxWidth:11,font:{size:10}}}, tooltip:{mode:'index',intersect:false, callbacks:{ label:(it)=>{ const v=it.parsed.y; if(!v) return null; return `${it.dataset.label}: ${v}`; } }} },
+      scales:{ x:{stacked:true}, y:{stacked:true, beginAtZero:true, max:yMax, ticks:{stepSize:yMax/4}} } },
+    plugins:[stackTotalPlugin]
+  });
+}
+// Stacked bar: x = vendors, stacked by status.
+function renderVendorByStatus(vendors, range){
+  destroyChart('chartVendorStatus');
+  const per = vendors.map(v => computeRangeStats([v], range.start, range.end));
+  const vendorStatus = per.map(s=>{ const t={}; Object.values(s.statusByCause).forEach(o=>Object.entries(o).forEach(([st,n])=>{ t[st]=(t[st]||0)+n; })); return t; });
+  const KNOWN = ['On-Going','Monitoring','Unavoidable','Operational','Completed'];
+  const extra = new Set(); vendorStatus.forEach(t=>Object.keys(t).forEach(s=>{ if(!KNOWN.includes(s)) extra.add(s); }));
+  const statuses = KNOWN.concat(Array.from(extra));
+  const yMax = niceMax(Math.max(0, ...per.map(s=>s.total)));
+  const statusColor = s => STATUS_COLOR[s] || (s==='(none)'?'#cbd5e1':'#9ca3af');
+  const datasets = statuses.map(s=>({ label:s, data: vendorStatus.map(t=>t[s]||0), backgroundColor: statusColor(s) }));
+  window.lastVendorStatus = { rows: [['Vendor', ...statuses, 'Total'], ...vendors.map((v,i)=>{ const r=statuses.map(s=>vendorStatus[i][s]||0); return [v, ...r, r.reduce((a,x)=>a+x,0)]; })] };
+  chartInstances['chartVendorStatus'] = new Chart(document.getElementById('chartVendorStatus'), {
+    type:'bar', data:{ labels:vendors, datasets },
+    options:{ responsive:true, maintainAspectRatio:false, layout:{padding:{top:16}},
+      interaction:{mode:'index',intersect:false},
+      plugins:{ legend:{position:'bottom', labels:{boxWidth:11,font:{size:10}}}, tooltip:{mode:'index',intersect:false, callbacks:{ label:(it)=>{ const v=it.parsed.y; if(!v) return null; return `${it.dataset.label}: ${v}`; } }} },
+      scales:{ x:{stacked:true}, y:{stacked:true, beginAtZero:true, max:yMax, ticks:{stepSize:yMax/4}} } },
+    plugins:[stackTotalPlugin]
   });
 }
 function renderTop5(stats){
-  const items = stats.rows.slice().sort((a,b)=>b.sum-a.sum).slice(0,10);
   const el = document.getElementById('top5Table');
-  if(!items.length){ el.innerHTML = '<p class="empty">No data available for the selected period.</p>'; return; }
-  el.innerHTML = `<table><thead><tr><th>Vendor</th><th>Machine</th><th>Alarm Name</th><th>Case</th><th>Cause</th><th>Count (period)</th></tr></thead>
-    <tbody>${items.map(i=>`<tr><td><span class="tag">${esc(i.vendor)}</span></td><td>${esc(i.row.machine)}</td><td>${esc(i.row.alarmName)}</td><td>${esc(i.row.caseNo)}</td><td>${esc(i.row.cause)}</td><td class="num">${num(i.sum)}</td></tr>`).join('')}</tbody></table>`;
+  if(!stats.rows.length){ el.innerHTML = '<p class="empty">No data available for the selected period.</p>'; lastTop=null; return; }
+  if(topMode === 'alarm'){
+    // Aggregate by Alarm Name across all causes/machines.
+    const agg = {};
+    stats.rows.forEach(r=>{
+      const name = String(r.row.alarmName || '(unnamed)');
+      const a = (agg[name] = agg[name] || { count:0, causes:new Set(), machines:new Set() });
+      a.count += r.sum; if(r.row.cause) a.causes.add(r.row.cause); if(r.row.machine) a.machines.add(r.row.machine);
+    });
+    const items = Object.entries(agg).sort((a,b)=>b[1].count-a[1].count).slice(0,10);
+    lastTop = { header:['Alarm Name','Causes','Machine Types','Count (period)'],
+      rows: items.map(([n,a])=>[n, Array.from(a.causes).join(', '), Array.from(a.machines).join(', '), a.count]) };
+    el.innerHTML = `<table><thead><tr><th>Alarm Name</th><th>Causes</th><th>Machine Types</th><th>Count (period)</th></tr></thead>
+      <tbody>${items.map(([n,a])=>`<tr><td>${esc(n)}</td><td>${esc(Array.from(a.causes).join(', '))}</td><td>${esc(Array.from(a.machines).join(', '))}</td><td class="num">${num(a.count)}</td></tr>`).join('')}</tbody></table>`;
+  } else {
+    const items = stats.rows.slice().sort((a,b)=>b.sum-a.sum).slice(0,10);
+    lastTop = { header:['Vendor','Machine','Alarm Name','Case','Cause','Count (period)'],
+      rows: items.map(i=>[i.vendor, i.row.machine, i.row.alarmName, i.row.caseNo, i.row.cause, i.sum]) };
+    el.innerHTML = `<table><thead><tr><th>Vendor</th><th>Machine</th><th>Alarm Name</th><th>Case</th><th>Cause</th><th>Count (period)</th></tr></thead>
+      <tbody>${items.map(i=>`<tr><td><span class="tag">${esc(i.vendor)}</span></td><td>${esc(i.row.machine)}</td><td>${esc(i.row.alarmName)}</td><td>${esc(i.row.caseNo)}</td><td>${esc(i.row.cause)}</td><td class="num">${num(i.sum)}</td></tr>`).join('')}</tbody></table>`;
+  }
 }
 function computeFocusList(stats){
   const STATUS_WEIGHT = {'Unavoidable':0.25, 'Operational':0.15, 'On-going':1.0, 'On-Going':1.0, 'Monitoring':0.7, 'Completed':0.05};
@@ -1686,7 +1946,7 @@ function renderNarrative(vendors, stats, range){
 // Populate the From/To date dropdowns from the available data dates.
 function parseDateInput(v){ if(!v) return null; const p=v.split('-').map(Number); return (p.length===3 && !p.some(isNaN)) ? new Date(p[0], p[1]-1, p[2]) : null; }
 function toDateInputValue(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
-// Fill the calendar date inputs from the current selection (bounds = available data range).
+// Fill the calendar date inputs + the range slider from the current selection.
 function renderDateSelectors(){
   const s = document.getElementById('dateStart'), e = document.getElementById('dateEnd');
   if(!s || !e) return;
@@ -1700,6 +1960,49 @@ function renderDateSelectors(){
   } else {
     s.value = ''; e.value = '';
   }
+  // sync the dual-thumb slider
+  const ss = document.getElementById('sliderStart'), se = document.getElementById('sliderEnd');
+  if(ss && se){
+    const maxIdx = Math.max(0, dashDates.length-1);
+    ss.max = String(maxIdx); se.max = String(maxIdx);
+    let a = 0, b = maxIdx;
+    if(dashState.start) a = Math.max(0, dashDates.findIndex(d=>sameDay(d,dashState.start)));
+    if(dashState.end)   b = Math.max(0, dashDates.findIndex(d=>sameDay(d,dashState.end)));
+    ss.value = String(a); se.value = String(b);
+    updateDateFill();
+  }
+}
+function updateDateFill(){
+  const ss = document.getElementById('sliderStart'), se = document.getElementById('sliderEnd'), fill = document.getElementById('dateFill');
+  if(!ss || !se || !fill) return;
+  const maxIdx = Math.max(1, Number(ss.max));
+  let a = Number(ss.value), b = Number(se.value);
+  if(a > b){ const t=a; a=b; b=t; }
+  fill.style.left = (a/maxIdx*100) + '%';
+  fill.style.width = ((b-a)/maxIdx*100) + '%';
+}
+// Live label update while dragging a slider thumb (no heavy re-render yet).
+function onDateSliderInput(){
+  if(!dashDates.length) return;
+  const ss = document.getElementById('sliderStart'), se = document.getElementById('sliderEnd');
+  let a = Number(ss.value), b = Number(se.value);
+  if(a > b){ const t=a; a=b; b=t; }
+  updateDateFill();
+  document.getElementById('dateStart').value = toDateInputValue(dashDates[a]);
+  document.getElementById('dateEnd').value = toDateInputValue(dashDates[b]);
+  document.getElementById('rangeLabel').textContent = `${fmtDate(dashDates[a])} ~ ${fmtDate(dashDates[b])}`;
+}
+// Commit the slider selection (on release) → update the dashboard.
+function applyDateSlider(){
+  if(!dashDates.length) return;
+  const ss = document.getElementById('sliderStart'), se = document.getElementById('sliderEnd');
+  let a = Number(ss.value), b = Number(se.value);
+  if(a > b){ const t=a; a=b; b=t; }
+  dashState = { start: dashDates[a], end: dashDates[b] };
+  const vendors = activeVendors();
+  renderOverviewChart(vendors);
+  renderDailyChart(vendors);
+  renderDashboardBody();
 }
 // Apply the calendar date inputs to the selected period.
 function applyDateSelectors(){
@@ -1710,6 +2013,7 @@ function applyDateSelectors(){
   if(start > end){ const t=start; start=end; end=t; }
   dashState = { start, end };
   const vendors = activeVendors();
+  renderOverviewChart(vendors);
   renderDailyChart(vendors);
   renderDashboardBody();
 }
@@ -1755,6 +2059,7 @@ function syncAllCheckbox(f){
 }
 function applyFilterChange(){
   const vendors = activeVendors();
+  renderOverviewChart(vendors);
   renderDailyChart(vendors);
   renderDashboardBody();
   updateFilterSummary();
@@ -1765,12 +2070,11 @@ function renderDashboardBody(){
   if(!vendors.length){
     renderKPIs(vendors, {total:0,statusByCause:{}}, {start:null,end:null});
     renderNarrative(vendors);
-    ['chartCause','chartImprove','chartTrend','chartVendor'].forEach(destroyChart);
+    ['chartCause','chartImprove','chartTrend','chartVendorCause','chartVendorStatus'].forEach(destroyChart);
     document.getElementById('top5Table').innerHTML = '<p class="empty">No alarm lists uploaded. Please upload a file in a vendor tab.</p>';
     document.getElementById('focusList').innerHTML = '';
     const cp = document.getElementById('causePct'); if(cp) cp.innerHTML='';
     document.getElementById('locationReportCard').style.display = 'none';
-    document.getElementById('vendorCompareCard').style.display = 'none';
     document.getElementById('rangeLabel').textContent = 'All';
     return;
   }
@@ -1783,8 +2087,9 @@ function renderDashboardBody(){
   try{
     renderCauseCharts(vendors, stats);
     renderImproveChart(vendors, stats);
+    renderVendorByCause(vendors, range);
+    renderVendorByStatus(vendors, range);
     renderTrendChart(vendors, range);
-    renderVendorCompareChart(vendors, range);
   }catch(err){
     console.error('Chart rendering error:', err);
   }
@@ -1803,6 +2108,7 @@ function renderDashboard(){
     dashState = { start:null, end:null };
   }
   renderFilters(vendors);
+  renderOverviewChart(vendors);
   renderDailyChart(vendors);
   renderDashboardBody();
 }
@@ -1859,6 +2165,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       return;
     }
     if(e.target.id==='dateStart' || e.target.id==='dateEnd'){ applyDateSelectors(); }
+    if(e.target.id==='sliderStart' || e.target.id==='sliderEnd'){ applyDateSlider(); }
     // slicer filter checkboxes
     if(e.target.classList.contains('filteropt')){
       const f = e.target.dataset.field, val = e.target.value;
@@ -1883,6 +2190,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
         lb.style.display = lb.textContent.toLowerCase().includes(q) ? '' : 'none';
       });
     }
+    if(e.target.id==='sliderStart' || e.target.id==='sliderEnd'){ onDateSliderInput(); }
   });
   document.getElementById('panel-DASH').addEventListener('click', e=>{
     if(e.target.id==='dashRefresh'){ renderDashboard(); }
@@ -1891,6 +2199,19 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(e.target.id==='locReportClose'){ document.getElementById('locationReportCard').style.display='none'; }
     if(e.target.id==='locExportCsv'){ exportLocReportCsv(); }
     if(e.target.id==='locExportXlsx'){ exportLocReportXlsx(); }
+    if(e.target.id==='expDaily'){ exportDailyXlsx(); }
+    if(e.target.id==='expCause'){ exportCauseXlsx(); }
+    if(e.target.id==='expImprove'){ exportImproveXlsx(); }
+    if(e.target.id==='expTrend'){ exportTrendXlsx(); }
+    if(e.target.id==='expVendorCause'){ exportVendorCauseXlsx(); }
+    if(e.target.id==='expVendorStatus'){ exportVendorStatusXlsx(); }
+    if(e.target.id==='expTop'){ exportTopXlsx(); }
+    if(e.target.id==='topModeCase' || e.target.id==='topModeAlarm'){
+      topMode = e.target.dataset.mode;
+      document.getElementById('topModeCase').className = 'btn sm' + (topMode==='case'?'':' secondary');
+      document.getElementById('topModeAlarm').className = 'btn sm' + (topMode==='alarm'?'':' secondary');
+      if(lastStats) renderTop5(lastStats);
+    }
   });
 
   // Drag-to-select the analysis period on the daily bar chart.
