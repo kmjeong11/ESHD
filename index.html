@@ -477,7 +477,7 @@ function setupDailyChartDrag(){
     dragStart = null;
     if(!dates[a] || !dates[b]) return;
     dashState = { start: dates[a], end: dates[b] };
-    renderDailyChart(activeVendors(document.getElementById('dashVendorFilter')?.value || 'ALL'));
+    renderDailyChart(activeVendors());
     renderDashboardBody();
   });
 }
@@ -986,6 +986,13 @@ function dashboardPanelHTML(){
         </h3>
         <div class="muted" id="filterSummary" style="font-size:11.5px;font-weight:600;margin-bottom:8px;"></div>
         <div class="filterbox" style="margin-bottom:12px;">
+          <div class="ftitle"><span>🏢 OEM (Vendor)</span><button class="btn secondary sm" id="dashRefresh" title="Refresh">↻</button></div>
+          <label class="filterall"><input type="checkbox" id="vendorAll" checked> (All)</label>
+          <div class="filterlist" style="max-height:none;border-top:none;">
+            ${VENDORS.map(v=>`<label><input type="checkbox" class="vendoropt" value="${v}" checked> ${v}</label>`).join('')}
+          </div>
+        </div>
+        <div class="filterbox" style="margin-bottom:12px;">
           <div class="ftitle"><span>📅 Date</span><button class="btn gray sm" id="rangeReset">All</button></div>
           <label style="font-size:12px;display:block;margin-bottom:6px;">From<br><input type="date" id="dateStart" class="filtersearch" style="margin-bottom:0;"></label>
           <label style="font-size:12px;display:block;">To<br><input type="date" id="dateEnd" class="filtersearch" style="margin-bottom:0;"></label>
@@ -995,15 +1002,6 @@ function dashboardPanelHTML(){
       </div>
     </aside>
     <div class="dashmain">
-    <div class="card" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-      <b>Select Vendor</b>
-      <select class="vendorfilter" id="dashVendorFilter">
-        <option value="ALL">All</option>
-        ${VENDORS.map(v=>`<option value="${v}">${v}</option>`).join('')}
-      </select>
-      <button class="btn secondary" id="dashRefresh">Refresh</button>
-      <span class="muted" style="font-size:12px;">Pick a start/end date below, or drag across the daily chart, to set the analysis period.</span>
-    </div>
     <div class="card">
       <h3>■ Daily Alarm Count <span class="muted" style="font-size:11.5px;font-weight:400;">— pick dates in the 📅 Date filter, or drag across the bars</span></h3>
       <div class="chartbox" style="height:200px;"><canvas id="chartDaily"></canvas></div>
@@ -1264,9 +1262,11 @@ function effEntry(e){
 let lastStats = null;   // most recent computeRangeStats result (for chart clicks)
 let lastLocReport = null; // { cause, rangeLabel, rows:[[location,count],...] }
 
-function activeVendors(filter){
-  const list = filter==='ALL' ? VENDORS : [filter];
-  return list.filter(v => state[v] && state[v].current);
+// Vendors (OEM) chosen via the sidebar checkboxes. Starts with all selected.
+const selectedVendors = new Set(VENDORS);
+// Active = selected AND has uploaded alarm data. (arg kept for backward-compat, ignored)
+function activeVendors(){
+  return VENDORS.filter(v => selectedVendors.has(v) && state[v] && state[v].current);
 }
 function destroyChart(id){ if(chartInstances[id]){ chartInstances[id].destroy(); delete chartInstances[id]; } }
 function dkey(d){ return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`; }
@@ -1607,12 +1607,13 @@ function renderTrendChart(vendors, range){
     options:{responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true}}}
   });
 }
-function renderVendorCompareChart(filter, allVendors, range){
+function renderVendorCompareChart(vendors, range){
   const card = document.getElementById('vendorCompareCard');
-  if(filter!=='ALL'){ card.style.display='none'; return; }
+  // Only meaningful when comparing more than one vendor.
+  if(!vendors || vendors.length<2){ card.style.display='none'; return; }
   card.style.display='';
-  const labels = allVendors;
-  const data = allVendors.map(v => computeRangeStats([v], range.start, range.end).total);
+  const labels = vendors;
+  const data = vendors.map(v => computeRangeStats([v], range.start, range.end).total);
   destroyChart('chartVendor');
   chartInstances['chartVendor'] = new Chart(document.getElementById('chartVendor'), {
     type:'bar',
@@ -1708,7 +1709,7 @@ function applyDateSelectors(){
   if(!start || !end) return;               // need both dates
   if(start > end){ const t=start; start=end; end=t; }
   dashState = { start, end };
-  const vendors = activeVendors(document.getElementById('dashVendorFilter')?.value || 'ALL');
+  const vendors = activeVendors();
   renderDailyChart(vendors);
   renderDashboardBody();
 }
@@ -1753,14 +1754,13 @@ function syncAllCheckbox(f){
   if(cb) cb.checked = dashFilters[f].size===0;
 }
 function applyFilterChange(){
-  const vendors = activeVendors(document.getElementById('dashVendorFilter')?.value || 'ALL');
+  const vendors = activeVendors();
   renderDailyChart(vendors);
   renderDashboardBody();
   updateFilterSummary();
 }
 function renderDashboardBody(){
-  const filter = document.getElementById('dashVendorFilter')?.value || 'ALL';
-  const vendors = activeVendors(filter);
+  const vendors = activeVendors();
   renderDateSelectors();
   if(!vendors.length){
     renderKPIs(vendors, {total:0,statusByCause:{}}, {start:null,end:null});
@@ -1770,7 +1770,7 @@ function renderDashboardBody(){
     document.getElementById('focusList').innerHTML = '';
     const cp = document.getElementById('causePct'); if(cp) cp.innerHTML='';
     document.getElementById('locationReportCard').style.display = 'none';
-    document.getElementById('vendorCompareCard').style.display = filter==='ALL' ? '' : 'none';
+    document.getElementById('vendorCompareCard').style.display = 'none';
     document.getElementById('rangeLabel').textContent = 'All';
     return;
   }
@@ -1783,8 +1783,8 @@ function renderDashboardBody(){
   try{
     renderCauseCharts(vendors, stats);
     renderImproveChart(vendors, stats);
-    renderTrendChart(filter==='ALL' ? VENDORS.filter(v=>state[v]&&state[v].current) : vendors, range);
-    renderVendorCompareChart(filter, VENDORS.filter(v=>state[v] && state[v].current), range);
+    renderTrendChart(vendors, range);
+    renderVendorCompareChart(vendors, range);
   }catch(err){
     console.error('Chart rendering error:', err);
   }
@@ -1796,8 +1796,7 @@ function renderDashboardBody(){
   }
 }
 function renderDashboard(){
-  const filter = document.getElementById('dashVendorFilter')?.value || 'ALL';
-  const vendors = activeVendors(filter);
+  const vendors = activeVendors();
   dashDates = getAllDataDates(vendors);
   // Clamp any existing selection to the currently available dates.
   if(dashState.start && (!dashDates.length || dashState.start < dashDates[0] || dashState.end > dashDates[dashDates.length-1])){
@@ -1842,7 +1841,23 @@ document.addEventListener('DOMContentLoaded', ()=>{
   });
 
   document.getElementById('panel-DASH').addEventListener('change', e=>{
-    if(e.target.id==='dashVendorFilter'){ dashState={start:null,end:null}; renderDashboard(); }
+    if(e.target.id==='vendorAll'){
+      selectedVendors.clear();
+      if(e.target.checked) VENDORS.forEach(v=>selectedVendors.add(v));
+      document.querySelectorAll('.vendoropt').forEach(cb=>cb.checked = e.target.checked);
+      dashState = { start:null, end:null };
+      renderDashboard();
+      return;
+    }
+    if(e.target.classList.contains('vendoropt')){
+      const v = e.target.value;
+      if(e.target.checked) selectedVendors.add(v); else selectedVendors.delete(v);
+      const allcb = document.getElementById('vendorAll');
+      if(allcb) allcb.checked = (selectedVendors.size === VENDORS.length);
+      dashState = { start:null, end:null };
+      renderDashboard();
+      return;
+    }
     if(e.target.id==='dateStart' || e.target.id==='dateEnd'){ applyDateSelectors(); }
     // slicer filter checkboxes
     if(e.target.classList.contains('filteropt')){
