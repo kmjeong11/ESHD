@@ -455,10 +455,12 @@ function setupDailyChartDrag(){
   });
   document.addEventListener('mouseup', e=>{
     const chart = chartInstances['chartDaily']; if(!chart || dragStart==null) return;
+    const dates = chart.$dates || dashDates;
     const j = idxAt(chart, e.clientX);
     const a = Math.min(dragStart,j), b = Math.max(dragStart,j);
     dragStart = null;
-    dashState = { start: dashDates[a], end: dashDates[b] };
+    if(!dates[a] || !dates[b]) return;
+    dashState = { start: dates[a], end: dates[b] };
     renderDailyChart(activeVendors(document.getElementById('dashVendorFilter')?.value || 'ALL'));
     renderDashboardBody();
   });
@@ -998,10 +1000,14 @@ function dashboardPanelHTML(){
           <button class="btn gray sm" id="locReportClose">✕ Close</button>
         </span>
       </h3>
+      <div style="margin-bottom:12px;">
+        <div style="font-size:12.5px;font-weight:700;margin-bottom:4px;">Daily trend for this cause (selected period)</div>
+        <div class="chartbox" style="height:160px;"><canvas id="causeDailyChart"></canvas></div>
+      </div>
       <div id="locReportBody"></div>
     </div>
     <div class="grid2">
-      <div class="card"><h3>■ Weekly Alarm Total Trend (Based on Upload History)</h3><div class="chartbox"><canvas id="chartTrend"></canvas></div></div>
+      <div class="card"><h3>■ Weekly Alarm Total Trend (Sun–Sat weeks)</h3><div class="chartbox"><canvas id="chartTrend"></canvas></div></div>
       <div class="card" id="vendorCompareCard"><h3>■ Alarm Comparison by Vendor (selected period)</h3><div class="chartbox"><canvas id="chartVendor"></canvas></div></div>
     </div>
     <div class="card">
@@ -1244,9 +1250,10 @@ function computeRangeStats(vendors, start, end){
   // (or just "observedIssue" for unspecified) → count, so the location report can show
   // the Observed Issue / Cause text alongside each location.
   const SEP = '';
-  const byCause = {}, locByCause = {}, unspecByCause = {}, unspecTotalByCause = {}, statusByCause = {}, rows = [], dailyMap = {};
+  const byCause = {}, locByCause = {}, unspecByCause = {}, unspecTotalByCause = {}, statusByCause = {}, rows = [], dailyMap = {}, causeDailyByCause = {};
   vendors.forEach(v=>{
     (state[v].current.listRows||[]).forEach(row=>{
+      const rowCause = row.cause || 'Unknown';
       let sum = 0; const locs = [];
       (row.daily||[]).forEach(e=>{
         if(inRange(e.date) && e.count>0){
@@ -1254,6 +1261,9 @@ function computeRangeStats(vendors, start, end){
           const k = dkey(e.date);
           if(!dailyMap[k]) dailyMap[k] = { date:e.date, count:0 };
           dailyMap[k].count += e.count;
+          const cd = (causeDailyByCause[rowCause] = causeDailyByCause[rowCause] || {});
+          if(!cd[k]) cd[k] = { date:e.date, count:0 };
+          cd[k].count += e.count;
           e.locations.forEach(l=>locs.push(l));
         }
       });
@@ -1277,7 +1287,7 @@ function computeRangeStats(vendors, start, end){
     });
   });
   const dailyTotals = Object.values(dailyMap).sort((a,b)=>a.date-b.date);
-  return { total, byCause, locByCause, unspecByCause, unspecTotalByCause, statusByCause, rows, dailyTotals, start, end, SEP };
+  return { total, byCause, locByCause, unspecByCause, unspecTotalByCause, statusByCause, causeDailyByCause, rows, dailyTotals, start, end, SEP };
 }
 // Total for the equally-long window immediately preceding [start,end] (for the delta KPI).
 function prevPeriodTotal(vendors, start, end){
@@ -1317,17 +1327,19 @@ function renderKPIs(vendors, stats, range){
   `;
 }
 
-// Daily bar chart across ALL data, with a draggable selection overlay.
+// Daily bar chart — shows ONLY the currently selected period (widen/move via the From/To
+// dropdowns, which always list every available date). Dragging narrows within the shown bars.
 function renderDailyChart(vendors){
   const canvas = document.getElementById('chartDaily');
   destroyChart('chartDaily');
-  if(!dashDates.length){
-    return;
-  }
-  const full = computeRangeStats(vendors, dashDates[0], dashDates[dashDates.length-1]);
+  if(!dashDates.length){ return; }
+  const range = getSelectedRange(vendors);
+  const visible = dashDates.filter(d => (!range.start || d>=range.start) && (!range.end || d<=range.end));
+  const dates = visible.length ? visible : dashDates;
+  const full = computeRangeStats(vendors, dates[0], dates[dates.length-1]);
   const totalByKey = {}; full.dailyTotals.forEach(d=>{ totalByKey[dkey(d.date)] = d.count; });
-  const labels = dashDates.map(d=>fmtDate(d));
-  const data = dashDates.map(d=> totalByKey[dkey(d)] || 0);
+  const labels = dates.map(d=>fmtDate(d));
+  const data = dates.map(d=> totalByKey[dkey(d)] || 0);
   const chart = new Chart(canvas, {
     type:'bar',
     data:{ labels, datasets:[{ label:'Alarms/day', data, backgroundColor:'#93c5fd', borderColor:'#2563eb', borderWidth:1 }] },
@@ -1337,13 +1349,7 @@ function renderDailyChart(vendors){
       scales:{ y:{ beginAtZero:true } }
     }
   });
-  // paint current selection
-  const range = getSelectedRange(vendors);
-  if(dashState.start && dashState.end){
-    const a = dashDates.findIndex(d=>sameDay(d, dashState.start));
-    const b = dashDates.findIndex(d=>sameDay(d, dashState.end));
-    if(a>=0 && b>=0) chart.$brush = { a:Math.min(a,b), b:Math.max(a,b) };
-  }
+  chart.$dates = dates;   // the drag handler maps pixels → these dates
   chart.update('none');
   chartInstances['chartDaily'] = chart;
 }
@@ -1432,8 +1438,30 @@ function showLocationReport(cause){
       <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td style="white-space:pre-wrap;" title="${esc(r[4])}">${esc(clip(r[4]))}</td><td class="num">${r[5]}</td><td class="num">${Math.round(r[5]/total*100)}%</td></tr>`).join('')}
       <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="5">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
   }
+  renderCauseDailyChart(cause);
   card.style.display = '';
   card.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+// Daily bar chart of the clicked cause across the selected period.
+function renderCauseDailyChart(cause){
+  destroyChart('causeDailyChart');
+  const canvas = document.getElementById('causeDailyChart');
+  if(!canvas || !lastStats) return;
+  const cd = (lastStats.causeDailyByCause && lastStats.causeDailyByCause[cause]) || {};
+  // Show every day in the selected range (0 where no alarms), so the trend reads continuously.
+  const days = [];
+  if(lastStats.start && lastStats.end){
+    for(let d=new Date(lastStats.start); d<=lastStats.end; d.setDate(d.getDate()+1)) days.push(new Date(d));
+  } else {
+    Object.values(cd).forEach(o=>days.push(o.date)); days.sort((a,b)=>a-b);
+  }
+  const labels = days.map(fmtDate);
+  const data = days.map(d=> cd[dkey(d)]?.count || 0);
+  chartInstances['causeDailyChart'] = new Chart(canvas, {
+    type:'bar',
+    data:{ labels, datasets:[{ label:`${cause} / day`, data, backgroundColor: causeColor(cause) }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true } } }
+  });
 }
 function locReportFilenameBase(){
   const c = (lastLocReport?.cause || 'cause').replace(/[^\w가-힣]+/g,'_');
@@ -1463,30 +1491,60 @@ function exportLocReportXlsx(){
   XLSX.utils.book_append_sheet(wb, ws, 'Location Report');
   XLSX.writeFile(wb, locReportFilenameBase()+'.xlsx');
 }
-function renderTrendChart(vendors){
-  const hist = loadHistory();
-  const allKeys = new Set();
-  vendors.forEach(v => (hist[v]||[]).forEach(s=>allKeys.add(s.weekKey)));
-  const keys = Array.from(allKeys).sort();
+// Sunday of the calendar week containing d (weeks run Sunday→Saturday).
+function weekSunday(d){
+  const s = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  s.setDate(s.getDate() - s.getDay());   // getDay(): 0=Sun
+  return s;
+}
+// Weekly trend in consecutive 7-day buckets starting from the SELECTED period's start date.
+// bucket 0 = start..start+6, bucket 1 = start+7..start+13, ... The final bucket is clamped
+// to the selected end date, so selecting 7/5~7/17 gives 7/5~7/11 (7d) then 7/12~7/17 (6d).
+// X-axis labels show each bucket's actual date span.
+function renderTrendChart(vendors, range){
   destroyChart('chartTrend');
-  if(!keys.length){
+  const DAY = 86400000;
+  // Fall back to full data span if no explicit selection.
+  let startMs = range && range.start ? range.start.getTime() : null;
+  let endMs   = range && range.end   ? range.end.getTime()   : null;
+  if(startMs===null || endMs===null){
+    vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>(row.daily||[]).forEach(e=>{
+      if(e.count>0){ const t=e.date.getTime(); if(startMs===null||t<startMs) startMs=t; if(endMs===null||t>endMs) endMs=t; }
+    })));
+  }
+  if(startMs===null){
     chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
       type:'line', data:{labels:[], datasets:[]},
-      options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true, text:'Upload files weekly to accumulate trend data.'}}}
+      options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true, text:'No data yet.'}}}
     });
     return;
   }
-  const datasets = vendors.map(v=>{
-    const map = {}; (hist[v]||[]).forEach(s=>map[s.weekKey]=s.weekTotal);
-    return {
-      label:v, data: keys.map(k=>map[k] ?? null), borderColor: VENDOR_COLOR[v], backgroundColor: VENDOR_COLOR[v],
-      spanGaps:true, tension:.25
-    };
+  const base = new Date(startMs); base.setHours(0,0,0,0);
+  const baseMs = base.getTime();
+  const nBuckets = Math.floor((endMs - baseMs)/(7*DAY)) + 1;
+  const inSel = t => t>=baseMs && t<=endMs;
+  const bucketOf = t => Math.floor((t - baseMs)/(7*DAY));
+  const totals = {};
+  vendors.forEach(v=>{
+    const map = {};
+    (state[v].current.listRows||[]).forEach(row=>(row.daily||[]).forEach(e=>{
+      if(e.count>0 && inSel(e.date.getTime())){ const b=bucketOf(e.date.getTime()); map[b]=(map[b]||0)+e.count; }
+    }));
+    totals[v] = map;
   });
-  const labels = keys.map(k=>{
-    const [s,e] = k.split('_');
-    return `${s.slice(5).replace('-','/')}~${e.slice(5).replace('-','/')}`;
+  const buckets = [];
+  for(let b=0;b<nBuckets;b++) buckets.push(b);
+  const labels = buckets.map(b=>{
+    const s = new Date(baseMs + b*7*DAY);
+    let eMs = baseMs + (b*7+6)*DAY;
+    if(eMs > endMs) eMs = endMs;   // clamp the last (possibly shorter) bucket
+    const e = new Date(eMs);
+    return `${s.getMonth()+1}/${s.getDate()}~${e.getMonth()+1}/${e.getDate()}`;
   });
+  const datasets = vendors.map(v=>({
+    label:v, data: buckets.map(b=> totals[v][b] ?? null),
+    borderColor: VENDOR_COLOR[v], backgroundColor: VENDOR_COLOR[v], spanGaps:true, tension:.25
+  }));
   chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
     type:'line', data:{labels, datasets},
     options:{responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true}}}
@@ -1503,28 +1561,6 @@ function renderVendorCompareChart(filter, allVendors, range){
     type:'bar',
     data:{ labels, datasets:[{ label:'Alarms (period)', data, backgroundColor: labels.map(v=>VENDOR_COLOR[v]) }] },
     options:{ responsive:true, maintainAspectRatio:false, scales:{ y:{ beginAtZero:true } } }
-  });
-}
-function renderTrendChart(vendors){
-  const hist = loadHistory();
-  const allKeys = new Set();
-  vendors.forEach(v => (hist[v]||[]).forEach(s=>allKeys.add(s.weekKey)));
-  const keys = Array.from(allKeys).sort();
-  destroyChart('chartTrend');
-  if(!keys.length){
-    chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
-      type:'line', data:{labels:[], datasets:[]},
-      options:{responsive:true, maintainAspectRatio:false, plugins:{title:{display:true, text:'Upload files over time to accumulate trend data.'}}}
-    });
-    return;
-  }
-  const datasets = vendors.map(v=>{
-    const map = {}; (hist[v]||[]).forEach(s=>map[s.weekKey]=s.weekTotal);
-    return { label:v, data: keys.map(k=>map[k] ?? null), borderColor: VENDOR_COLOR[v], backgroundColor: VENDOR_COLOR[v], spanGaps:true, tension:.25 };
-  });
-  const labels = keys.map(k=>{ const [s,e]=k.split('_'); return `${s.slice(5).replace('-','/')}~${e.slice(5).replace('-','/')}`; });
-  chartInstances['chartTrend'] = new Chart(document.getElementById('chartTrend'), {
-    type:'line', data:{labels, datasets}, options:{responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true}}}
   });
 }
 function renderTop5(stats){
@@ -1639,7 +1675,7 @@ function renderDashboardBody(){
   try{
     renderCauseCharts(vendors, stats);
     renderImproveChart(vendors, stats);
-    renderTrendChart(filter==='ALL' ? VENDORS.filter(v=>state[v]&&state[v].current) : vendors);
+    renderTrendChart(filter==='ALL' ? VENDORS.filter(v=>state[v]&&state[v].current) : vendors, range);
     renderVendorCompareChart(filter, VENDORS.filter(v=>state[v] && state[v].current), range);
   }catch(err){
     console.error('Chart rendering error:', err);
