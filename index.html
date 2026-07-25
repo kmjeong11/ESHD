@@ -1246,10 +1246,20 @@ let dashDates = [];
 // Slicer filters. Each set holds the EXCLUDED (unchecked) values → empty set = no filter,
 // and new/unseen values default to included. type/cause/aname are row-level; uid/mname
 // are location-level (filter individual occurrences by their Unit ID / machine name).
-const FILTER_FIELDS = ['type','status','cause','aname','mname','uid'];
-const FILTER_LABEL = { type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID' };
-const dashFilters = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set() };
-function anyLocationFilter(){ return dashFilters.uid.size>0 || dashFilters.mname.size>0; }
+const FILTER_FIELDS = ['type','status','cause','aname','mname','uid','port'];
+const FILTER_LABEL = { type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID', port:'Port (수동/자동)' };
+const dashFilters = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set() };
+// Manual ports: cell suffix 200-249 (e.g. J1ECNV21201-204) OR the explicit mixer-port list below.
+const MIXER_MANUAL_PORTS = new Set(['J1ECNV21201-305','J1ECNV21201-406','J1ECNV21201-303','J1ECNV21201-404','J1ECNV21101-404','J1ECNV21101-303','J1ECNV21101-405','J1ECNV21101-305']);
+function isManualPort(loc){
+  const s = String(loc||'').trim().toUpperCase();
+  if(MIXER_MANUAL_PORTS.has(s)) return true;
+  const i = s.lastIndexOf('-'); if(i<0) return false;
+  const n = parseInt(s.slice(i+1),10);
+  return Number.isFinite(n) && n>=200 && n<=249;
+}
+function portType(loc){ return isManualPort(loc) ? 'Manual' : 'Auto'; }
+function anyLocationFilter(){ return dashFilters.uid.size>0 || dashFilters.mname.size>0 || dashFilters.port.size>0; }
 function rowExcludedByFilters(row){
   return dashFilters.type.has(row.machine||'')
       || dashFilters.status.has(normalizeStatus(row.status) || '(none)')
@@ -1259,7 +1269,7 @@ function rowExcludedByFilters(row){
 // Effective count + locations for one daily entry after location-level filters.
 function effEntry(e){
   if(!anyLocationFilter()) return { count:e.count, locs:e.locations.slice() };
-  const locs = e.locations.filter(l => !dashFilters.uid.has(machinePrefix(l)) && !dashFilters.mname.has(machineName(l)));
+  const locs = e.locations.filter(l => !dashFilters.uid.has(machinePrefix(l)) && !dashFilters.mname.has(machineName(l)) && !dashFilters.port.has(portType(l)));
   return { count:locs.length, locs };
 }
 let lastStats = null;   // most recent computeRangeStats result (for chart clicks)
@@ -1337,16 +1347,17 @@ function computeRangeStats(vendors, start, end){
       if(sum>0){
         const cause = row.cause || 'Unknown';
         const issue = (row.observedIssue != null ? String(row.observedIssue).trim() : '');
+        const alarmNm = (row.alarmName != null ? String(row.alarmName).trim() : '');
         const st = normalizeStatus(row.status) || '(none)';
         byCause[cause] = (byCause[cause]||0) + sum;
-        // location keys carry status + observed issue so the report can show them per row.
+        // location keys carry status + observed issue + alarm name so the report can show them per row.
         const lo = (locByCause[cause] = locByCause[cause] || {});
-        locs.forEach(l=>{ const key = l + SEP + st + SEP + issue; lo[key] = (lo[key]||0) + 1; });
+        locs.forEach(l=>{ const key = l + SEP + st + SEP + issue + SEP + alarmNm; lo[key] = (lo[key]||0) + 1; });
         const unspec = sum - locs.length;   // occurrences with no recorded location
         if(unspec>0){
           unspecTotalByCause[cause] = (unspecTotalByCause[cause]||0) + unspec;
           const ui = (unspecByCause[cause] = unspecByCause[cause] || {});
-          const key = SEP + st + SEP + issue;
+          const key = SEP + st + SEP + issue + SEP + alarmNm;
           ui[key] = (ui[key]||0) + unspec;
         }
         // Status split by OCCURRENCE count (so it matches the "by cause" occurrence totals).
@@ -1526,23 +1537,18 @@ function showLocationReport(cause){
   const unspecTotal = lastStats.unspecTotalByCause?.[cause] || 0;
   // key = location + SEP + status + SEP + issue.  Row: [unitId, code, name, cause, status, issue, count]
   const splitKey = key => {
-    const p1 = key.indexOf(SEP);
-    const loc = p1>=0 ? key.slice(0,p1) : key;
-    const rest = p1>=0 ? key.slice(p1+SEP.length) : '';
-    const p2 = rest.indexOf(SEP);
-    const status = p2>=0 ? rest.slice(0,p2) : rest;
-    const issue = p2>=0 ? rest.slice(p2+SEP.length) : '';
-    return { loc, status, issue };
+    const parts = String(key).split(SEP);
+    return { loc: parts[0]||'', status: parts[1]||'', issue: parts[2]||'', alarm: parts[3]||'' };
   };
   // Include BOTH located rows AND unspecified rows so the table totals the full cause count.
-  const realRows = Object.entries(locObj).map(([key,count])=>{ const {loc,status,issue}=splitKey(key); return [loc, machinePrefix(loc), machineName(loc), cause, status, issue, count]; });
-  const unspecRows = Object.entries(lastStats.unspecByCause?.[cause] || {}).map(([key,count])=>{ const {status,issue}=splitKey(key); return ['(unspecified)','','(no location recorded)',cause,status,issue,count]; });
-  const rows = realRows.concat(unspecRows).sort((a,b)=>b[6]-a[6]);
+  const realRows = Object.entries(locObj).map(([key,count])=>{ const {loc,status,issue,alarm}=splitKey(key); return [loc, machinePrefix(loc), machineName(loc), alarm, cause, status, issue, count]; });
+  const unspecRows = Object.entries(lastStats.unspecByCause?.[cause] || {}).map(([key,count])=>{ const {status,issue,alarm}=splitKey(key); return ['(unspecified)','','(no location recorded)', alarm, cause, status, issue, count]; });
+  const rows = realRows.concat(unspecRows).sort((a,b)=>b[7]-a[7]);
   const note = unspecTotal>0 ? `${unspecTotal} of these occurrence(s) have no recorded equipment location (shown as “(unspecified)”).` : '';
   // status summary (by occurrence count) for this cause, with percentages
   const statusAgg = {};
-  rows.forEach(r=>{ statusAgg[r[4]] = (statusAgg[r[4]]||0) + r[6]; });
-  const statusTotal = rows.reduce((a,r)=>a+r[6],0) || 1;
+  rows.forEach(r=>{ statusAgg[r[5]] = (statusAgg[r[5]]||0) + r[7]; });
+  const statusTotal = rows.reduce((a,r)=>a+r[7],0) || 1;
   const statusOrder = ['On-Going','Monitoring','Unavoidable','Operational','Completed','(none)'];
   const statusSummary = Object.entries(statusAgg)
     .sort((a,b)=> (statusOrder.indexOf(a[0])+100*(statusOrder.indexOf(a[0])<0)) - (statusOrder.indexOf(b[0])+100*(statusOrder.indexOf(b[0])<0)))
@@ -1555,15 +1561,15 @@ function showLocationReport(cause){
   if(!rows.length){
     body.innerHTML = '<p class="empty">No location data for this cause in the selected period.</p>';
   } else {
-    const total = rows.reduce((a,r)=>a+r[6],0);
+    const total = rows.reduce((a,r)=>a+r[7],0);
     const clip = s => { s = String(s||''); return s.length>160 ? s.slice(0,160)+'…' : s; };
     body.innerHTML = `
       <div style="margin-bottom:8px;font-size:12.5px;"><b>Status:</b> ${statusSummary||'-'}</div>
       ${note?`<p class="muted" style="margin-top:0;font-size:12px;">ℹ ${esc(note)}</p>`:''}
       <div class="tablewrap" style="max-height:400px;"><table>
-      <thead><tr><th style="width:40px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th>Cause</th><th style="width:90px;">Status</th><th style="min-width:240px;">Observed Issue / Cause</th><th style="width:64px;">Count</th><th style="width:64px;">Share</th></tr></thead>
-      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${statusBadge(r[4])}</td><td style="white-space:pre-wrap;" title="${esc(r[5])}">${esc(clip(r[5]))}</td><td class="num">${r[6]}</td><td class="num">${Math.round(r[6]/total*100)}%</td></tr>`).join('')}
-      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="6">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
+      <thead><tr><th style="width:40px;">No.</th><th>Unit ID</th><th>Machine Code</th><th>Machine Name</th><th>Alarm Name</th><th>Cause</th><th style="width:90px;">Status</th><th style="min-width:240px;">Observed Issue / Cause</th><th style="width:64px;">Count</th><th style="width:64px;">Share</th></tr></thead>
+      <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[4])}</td><td>${statusBadge(r[5])}</td><td style="white-space:pre-wrap;" title="${esc(r[6])}">${esc(clip(r[6]))}</td><td class="num">${r[7]}</td><td class="num">${Math.round(r[7]/total*100)}%</td></tr>`).join('')}
+      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="7">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
   }
   renderCauseDailyChart(cause);
   card.style.display = '';
@@ -1595,7 +1601,7 @@ function locReportFilenameBase(){
   const r = (lastLocReport?.rangeLabel || '').replace(/[^\w]+/g,'');
   return `location_report_${c}_${r}`;
 }
-const LOC_HEADER = ['Unit ID','Machine Code','Machine Name','Cause','Status','Observed Issue / Cause','Alarm Count'];
+const LOC_HEADER = ['Unit ID','Machine Code','Machine Name','Alarm Name','Cause','Status','Observed Issue / Cause','Alarm Count'];
 function exportLocReportCsv(){
   if(!lastLocReport || !lastLocReport.rows.length) return;
   const lines = [LOC_HEADER, ...lastLocReport.rows];
@@ -1728,6 +1734,16 @@ function openUnitCountFor(proc){
   return OPEN_UNITS.filter(u => (proc==='ALL' || unitProcess(u)===proc)
     && !dashFilters.type.has(unitMachineType(u)) && !dashFilters.uid.has(u)).length;
 }
+// ---- Fixed weekly open-CIM counts for MTBF (equipment opened progressively) ----
+// slot 0 = 이번주(가장 최근 버킷), 1 = 저번주, 2 = 저저번주(및 그 이전).
+// Elec/Ass: 35 고정 · Formation: w27까지 47, w28부터 48.
+const WEEK_OPEN_COUNT = { EA:[35,35,35], FM:[48,48,47] };
+function openCountForWeek(proc, slot){
+  const s = Math.max(0, Math.min(2, slot));
+  if(proc==='EA') return WEEK_OPEN_COUNT.EA[s];
+  if(proc==='FM') return WEEK_OPEN_COUNT.FM[s];
+  return WEEK_OPEN_COUNT.EA[s] + WEEK_OPEN_COUNT.FM[s]; // ALL / ESHD
+}
 const PROCESS_VENDORS = { EA:['AVACO','PRI'], FM:['EQCELL','CNS'] };
 // Split a daily-totals array into consecutive 7-day buckets from range.start (last clamped).
 function weeklyBuckets(dailyTotals, range){
@@ -1747,23 +1763,26 @@ function weeklyBuckets(dailyTotals, range){
   return buckets;
 }
 // Render one weekly MTBF combo chart. dailyTotals = alarms for the relevant vendors/process.
-function renderMtbfInto(canvasId, noteId, exportSlot, dailyTotals, N, range){
+function renderMtbfInto(canvasId, noteId, exportSlot, dailyTotals, proc, range){
   destroyChart(canvasId);
+  const N0 = openCountForWeek(proc, 0);   // 이번주 open count (latest bucket)
   const note = document.getElementById(noteId);
-  if(note) note.textContent = `— ${N} CIM · MTBF = ${MTBF_HOURS_PER_DAY}h ÷ (alarms ÷ ${N} CIM ÷ alarm-days)`;
+  if(note) note.textContent = `— 이번주 ${N0} CIM · 주차별 오픈수 반영 · MTBF = ${MTBF_HOURS_PER_DAY}h × CIM × 알람발생일수 ÷ 알람`;
   const buckets = weeklyBuckets(dailyTotals, range);
-  if(!buckets.length || !N){
+  if(!buckets.length || !N0){
     chartInstances[canvasId] = new Chart(document.getElementById(canvasId), {
       type:'bar', data:{labels:[],datasets:[]},
-      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},title:{display:true,text: N? 'No data in range.' : 'No open units match the filter.'}}}
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},title:{display:true,text: N0? 'No data in range.' : 'No open units match the filter.'}}}
     });
     window[exportSlot] = null; return;
   }
+  // Each bucket uses the open count for its week slot: latest bucket = slot 0 (이번주), older = 1,2 (>=2 clamped).
+  const nPer = buckets.map((b,i)=> openCountForWeek(proc, buckets.length-1-i));
   const labels = buckets.map(b=>b.label);
   const alarms = buckets.map(b=>b.alarms);
-  const mtbf = buckets.map(b=> (b.alarms>0 && b.alarmDays>0) ? Math.round(MTBF_HOURS_PER_DAY*N*b.alarmDays/b.alarms*10)/10 : null);
+  const mtbf = buckets.map((b,i)=> (b.alarms>0 && b.alarmDays>0 && nPer[i]>0) ? Math.round(MTBF_HOURS_PER_DAY*nPer[i]*b.alarmDays/b.alarms*10)/10 : null);
   window[exportSlot] = { rows: [['Week','Number of Alarm','CIM (Open)','Alarm Days','MTBF (hr)'],
-    ...buckets.map((b,i)=>[b.label, b.alarms, N, b.alarmDays, mtbf[i]])] };
+    ...buckets.map((b,i)=>[b.label, b.alarms, nPer[i], b.alarmDays, mtbf[i]])] };
   chartInstances[canvasId] = new Chart(document.getElementById(canvasId), {
     data:{ labels, datasets:[
       { type:'bar',  label:'Number of Alarm', data:alarms, backgroundColor:'#9aa3af', order:2, yAxisID:'y' },
@@ -1781,14 +1800,14 @@ function renderMtbfInto(canvasId, noteId, exportSlot, dailyTotals, N, range){
 }
 function renderMtbfCharts(vendors, stats, range){
   // ESHD = all selected vendors + all open units.
-  renderMtbfInto('chartMtbfEshd','mtbfNoteEshd','lastMtbfEshd', stats.dailyTotals, openUnitCountFor('ALL'), range);
+  renderMtbfInto('chartMtbfEshd','mtbfNoteEshd','lastMtbfEshd', stats.dailyTotals, 'ALL', range);
   // Elec/Ass and Formation = alarms of that process's vendors (intersected with selection).
   const eaVend = vendors.filter(v=>PROCESS_VENDORS.EA.includes(v));
   const fmVend = vendors.filter(v=>PROCESS_VENDORS.FM.includes(v));
   const eaStats = eaVend.length ? computeRangeStats(eaVend, range.start, range.end) : {dailyTotals:[]};
   const fmStats = fmVend.length ? computeRangeStats(fmVend, range.start, range.end) : {dailyTotals:[]};
-  renderMtbfInto('chartMtbfEA','mtbfNoteEA','lastMtbfEA', eaStats.dailyTotals, openUnitCountFor('EA'), range);
-  renderMtbfInto('chartMtbfFM','mtbfNoteFM','lastMtbfFM', fmStats.dailyTotals, openUnitCountFor('FM'), range);
+  renderMtbfInto('chartMtbfEA','mtbfNoteEA','lastMtbfEA', eaStats.dailyTotals, 'EA', range);
+  renderMtbfInto('chartMtbfFM','mtbfNoteFM','lastMtbfFM', fmStats.dailyTotals, 'FM', range);
 }
 // Generic daily multi-line chart. seriesMap: { key -> { dkey -> {date,count} } }. colorFn(key)->color.
 // Stores the aoa in a target export slot. Returns nothing.
@@ -2024,7 +2043,7 @@ function applyDateSelectors(){
 /* ===================== Slicer filters ===================== */
 function escAttr(s){ return esc(String(s)).replace(/"/g,'&quot;'); }
 function collectFilterValues(vendors){
-  const vals = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set() };
+  const vals = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set() };
   vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>{
     if(row.machine) vals.type.add(String(row.machine));
     vals.status.add(normalizeStatus(row.status) || '(none)');
@@ -2032,6 +2051,7 @@ function collectFilterValues(vendors){
     if(row.alarmName) vals.aname.add(String(row.alarmName));
     (row.daily||[]).forEach(e=> e.locations.forEach(l=>{ vals.uid.add(machinePrefix(l)); vals.mname.add(machineName(l)); }));
   }));
+  vals.port.add('Auto'); vals.port.add('Manual');
   return vals;
 }
 function updateFilterSummary(){
