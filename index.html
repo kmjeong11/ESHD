@@ -1246,11 +1246,14 @@ let dashDates = [];
 // Slicer filters. Each set holds the EXCLUDED (unchecked) values → empty set = no filter,
 // and new/unseen values default to included. type/cause/aname are row-level; uid/mname
 // are location-level (filter individual occurrences by their Unit ID / machine name).
-const FILTER_FIELDS = ['type','status','cause','aname','mname','uid','port'];
-const FILTER_LABEL = { type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID', port:'Port (수동/자동)' };
-const dashFilters = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set() };
+const FILTER_FIELDS = ['type','status','cause','aname','mname','uid','port','cim'];
+const FILTER_LABEL = { type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID', port:'Port (Manual/Auto)', cim:'CIM (CIM/MES alarms)' };
+const dashFilters = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(), cim:new Set() };
 // Manual ports: cell suffix 200-249 (e.g. J1ECNV21201-204) OR the explicit mixer-port list below.
 const MIXER_MANUAL_PORTS = new Set(['J1ECNV21201-305','J1ECNV21201-406','J1ECNV21201-303','J1ECNV21201-404','J1ECNV21101-404','J1ECNV21101-303','J1ECNV21101-405','J1ECNV21101-305']);
+// CIM alarms = alarm name contains "CIM" or "MES" (case-insensitive).
+function isCimAlarm(name){ return /CIM|MES/i.test(String(name||'')); }
+function cimAlarmType(row){ return isCimAlarm(row && row.alarmName) ? 'CIM' : 'Non-CIM'; }
 function isManualPort(loc){
   const s = String(loc||'').trim().toUpperCase();
   if(MIXER_MANUAL_PORTS.has(s)) return true;
@@ -1264,7 +1267,8 @@ function rowExcludedByFilters(row){
   return dashFilters.type.has(row.machine||'')
       || dashFilters.status.has(normalizeStatus(row.status) || '(none)')
       || dashFilters.cause.has(row.cause||'Unknown')
-      || dashFilters.aname.has(row.alarmName||'');
+      || dashFilters.aname.has(row.alarmName||'')
+      || dashFilters.cim.has(cimAlarmType(row));
 }
 // Effective count + locations for one daily entry after location-level filters.
 function effEntry(e){
@@ -1767,7 +1771,7 @@ function renderMtbfInto(canvasId, noteId, exportSlot, dailyTotals, proc, range){
   destroyChart(canvasId);
   const N0 = openCountForWeek(proc, 0);   // 이번주 open count (latest bucket)
   const note = document.getElementById(noteId);
-  if(note) note.textContent = `— 이번주 ${N0} CIM · 주차별 오픈수 반영 · MTBF = ${MTBF_HOURS_PER_DAY}h × CIM × 알람발생일수 ÷ 알람`;
+  if(note) note.textContent = `— ${N0} CIM (this week) · per-week open counts applied · MTBF = ${MTBF_HOURS_PER_DAY}h × CIM × alarm-days ÷ alarms`;
   const buckets = weeklyBuckets(dailyTotals, range);
   if(!buckets.length || !N0){
     chartInstances[canvasId] = new Chart(document.getElementById(canvasId), {
@@ -2043,7 +2047,7 @@ function applyDateSelectors(){
 /* ===================== Slicer filters ===================== */
 function escAttr(s){ return esc(String(s)).replace(/"/g,'&quot;'); }
 function collectFilterValues(vendors){
-  const vals = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set() };
+  const vals = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(), cim:new Set() };
   vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>{
     if(row.machine) vals.type.add(String(row.machine));
     vals.status.add(normalizeStatus(row.status) || '(none)');
@@ -2052,6 +2056,7 @@ function collectFilterValues(vendors){
     (row.daily||[]).forEach(e=> e.locations.forEach(l=>{ vals.uid.add(machinePrefix(l)); vals.mname.add(machineName(l)); }));
   }));
   vals.port.add('Auto'); vals.port.add('Manual');
+  vals.cim.add('CIM'); vals.cim.add('Non-CIM');
   return vals;
 }
 function updateFilterSummary(){
