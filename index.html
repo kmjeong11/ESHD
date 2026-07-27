@@ -251,7 +251,9 @@ const ACTION_HINT_KR = {
   'Completed': '재발 여부만 확인'
 };
 function actionHint(status){ return UI_LANG==='KR' ? (ACTION_HINT_KR[status] || '현재 상태 확인 필요') : (ACTION_HINT[status] || 'Current status check needed'); }
-var UI_LANG=(function(){try{return localStorage.getItem('eshd_lang')||'EN';}catch(e){return 'EN';}})();
+// Always start in English by default. The EN/한국어 toggle still switches language
+// during the session (a manual choice is remembered only until reload).
+var UI_LANG='EN';
 var MTBF_PERIOD='week';
 function issueText(row){ if(!row) return ''; return UI_LANG==='KR' ? (row.symptom||row.observedIssue||'') : (row.observedIssue||row.symptom||''); }
 function actionText(row){ if(!row) return ''; return UI_LANG==='KR' ? (row.action||row.actionEn||'') : (row.actionEn||row.action||''); }
@@ -1714,10 +1716,11 @@ function causeBarColors(present){
   return present.map(c=> selectedCauses.includes(c) ? causeColor(c) : hexToRgba(causeColor(c), 0.20));
 }
 // After a selection change: recolor the bars and open the combined multi-cause report.
-function updateCauseSelectionUI(present){
+// doScroll is true only for an explicit user click, so re-renders never move the page.
+function updateCauseSelectionUI(present, doScroll){
   const ch = chartInstances['chartCause'];
-  if(ch){ ch.data.datasets[0].backgroundColor = causeBarColors(present); ch.update(); }
-  if(selectedCauses.length){ showLocationReport(selectedCauses.slice()); }
+  if(ch){ ch.data.datasets[0].backgroundColor = causeBarColors(present); ch.update('none'); }
+  if(selectedCauses.length){ showLocationReport(selectedCauses.slice(), doScroll); }
   else { const card = document.getElementById('locationReportCard'); if(card) card.style.display = 'none'; }
 }
 function renderCauseCharts(vendors, stats){
@@ -1747,7 +1750,7 @@ function renderCauseCharts(vendors, stats){
       selectedCauses = (selectedCauses.length===1 && selectedCauses[0]===cause) ? [] : [cause];
       causeAnchorIdx = idx;
     }
-    updateCauseSelectionUI(present);
+    updateCauseSelectionUI(present, true);   // explicit click -> allow scroll
   };
 
   destroyChart('chartCause');
@@ -1803,7 +1806,7 @@ function renderImproveChart(vendors, stats){
 }
 
 /* ===================== Location report (click a cause bar) ===================== */
-function showLocationReport(cause){
+function showLocationReport(cause, doScroll){
   if(!lastStats) return;
   // Accept a single cause (string) or several (array) for multi-select.
   const causes = Array.isArray(cause) ? cause.slice() : [cause];
@@ -1855,7 +1858,7 @@ function showLocationReport(cause){
   }
   renderCauseDailyChart(causes);
   card.style.display = '';
-  card.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  if(doScroll) card.scrollIntoView({ behavior:'smooth', block:'nearest' });
 }
 // Daily chart of the selected cause(s). Multiple causes are stacked, each in its own color.
 function renderCauseDailyChart(cause){
@@ -2726,6 +2729,9 @@ function renderDashboard(){
 
 /* ===================== Initialization ===================== */
 document.addEventListener('DOMContentLoaded', ()=>{
+  // Lighter: turn off Chart.js animations so re-renders (every filter change redraws
+  // ~9 charts) are instant and cheap. Features/specs are unchanged.
+  if(window.Chart && Chart.defaults){ Chart.defaults.animation=false; Chart.defaults.animations=false; }
   buildTabsAndPanels();
   if(typeof qaApplyLang==='function') qaApplyLang();
   (function(){ var en=document.getElementById('langEN'), kr=document.getElementById('langKR');
