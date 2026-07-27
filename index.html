@@ -150,9 +150,14 @@
 })();
 </script>
 
-<header>
+<header style="position:relative;">
   <h1>ESHD FA Alarm List Management &amp; Report Tool</h1>
   <p>Vendor-based alarm list upload (multi-file history management) · Shared storage (Firebase) auto-sync · Weekly alarm status dashboard &amp; automatic report</p>
+  <div style="position:absolute;top:16px;right:20px;display:flex;gap:6px;align-items:center;font-size:12px;color:#e5edff;">
+    <span style="opacity:.85;">Language</span>
+    <button id="langEN" style="padding:5px 10px;border:none;border-radius:6px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer;font-size:12px;">EN</button>
+    <button id="langKR" style="padding:5px 10px;border:none;border-radius:6px;background:#1e293b;color:#fff;font-weight:700;cursor:pointer;font-size:12px;">한국어</button>
+  </div>
 </header>
 
 <nav id="tabnav"></nav>
@@ -161,6 +166,18 @@
   <div id="panels"></div>
 </main>
 
+<div id="mapGate" style="display:none;position:fixed;inset:0;z-index:99000;background:rgba(15,23,42,.6);align-items:center;justify-content:center;font-family:'Segoe UI',sans-serif;">
+  <div style="background:#fff;padding:28px 32px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);width:300px;">
+    <h3 style="margin:0 0 4px;font-size:17px;color:#1e3a8a;">Alarm Map — Locked</h3>
+    <p style="margin:0 0 14px;font-size:12.5px;color:#64748b;">Enter the password to view the Alarm Map.</p>
+    <input id="mapPw" type="password" placeholder="Password" style="width:100%;padding:10px;margin-bottom:12px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box;font-size:14px;">
+    <div style="display:flex;gap:8px;">
+      <button id="mapGateBtn" style="flex:1;padding:10px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;">Enter</button>
+      <button id="mapGateCancel" style="padding:10px 14px;background:#e5e7eb;border:none;border-radius:6px;cursor:pointer;">Cancel</button>
+    </div>
+    <div id="mapErr" style="display:none;margin-top:10px;color:#dc2626;font-size:12.5px;">Incorrect password.</div>
+  </div>
+</div>
 <footer>Uploaded files are stored in the Firebase shared storage and are shared with everyone who accesses this link. Please share the link only with internal stakeholders.</footer>
 
 <div id="defModal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(15,23,42,.55);align-items:flex-start;justify-content:center;overflow:auto;padding:40px 16px;box-sizing:border-box;">
@@ -225,6 +242,46 @@ const ACTION_HINT = {
   'Operational': 'Re-verify whether this is a normal operational alarm',
   'Completed': 'Only check for recurrence'
 };
+const ACTION_HINT_KR = {
+  'On-going': '근본원인 분석 / 개선조치 필요',
+  'On-Going': '근본원인 분석 / 개선조치 필요',
+  'Monitoring': '재발 여부 지속 모니터링',
+  'Unavoidable': '재발 시 표준작업/센서 재점검',
+  'Operational': '정상 운영성 알람인지 재확인',
+  'Completed': '재발 여부만 확인'
+};
+function actionHint(status){ return UI_LANG==='KR' ? (ACTION_HINT_KR[status] || '현재 상태 확인 필요') : (ACTION_HINT[status] || 'Current status check needed'); }
+var UI_LANG=(function(){try{return localStorage.getItem('eshd_lang')||'EN';}catch(e){return 'EN';}})();
+var MTBF_PERIOD='week';
+function issueText(row){ if(!row) return ''; return UI_LANG==='KR' ? (row.symptom||row.observedIssue||'') : (row.observedIssue||row.symptom||''); }
+function actionText(row){ if(!row) return ''; return UI_LANG==='KR' ? (row.action||row.actionEn||'') : (row.actionEn||row.action||''); }
+function setLang(l){ UI_LANG=l; try{localStorage.setItem('eshd_lang',l);}catch(e){}
+  var en=document.getElementById('langEN'), kr=document.getElementById('langKR');
+  if(en) en.style.background=l==='EN'?'#2563eb':'#1e293b';
+  if(kr) kr.style.background=l==='KR'?'#2563eb':'#1e293b';
+  if(typeof qaApplyLang==='function') qaApplyLang();
+  if(typeof renderDashboard==='function') renderDashboard();
+  // Re-run the last Q&A query so its report follows the language.
+  if(typeof qaRunQuery==='function' && lastQaQuery){ qaRunQuery(lastQaQuery); }
+}
+function showMapGate(){ var m=document.getElementById('mapGate'); if(!m) return; m.style.display='flex'; var e=document.getElementById('mapErr'); if(e) e.style.display='none'; var i=document.getElementById('mapPw'); if(i){ i.value=''; setTimeout(function(){i.focus();},30); } }
+function mapGateSubmit(){ var pw=(document.getElementById('mapPw').value||''); if(pw==='eshdmap'){ try{ sessionStorage.setItem('eshd_map_auth','1'); }catch(e){} document.getElementById('mapGate').style.display='none'; switchTab('MAP'); } else { var e=document.getElementById('mapErr'); if(e) e.style.display='block'; } }
+function mtbfPeriodInfo(d, mode){ var y=d.getFullYear(), m=d.getMonth(), day=d.getDate();
+  if(mode==='day') return {key:y+'-'+m+'-'+day, ord:y*10000+m*100+day, label:(m+1)+'/'+day};
+  if(mode==='month') return {key:y+'-'+m, ord:y*100+m, label:y+'.'+String(m+1).padStart(2,'0')};
+  if(mode==='quarter'){ var q=Math.floor(m/3)+1; return {key:y+'-Q'+q, ord:y*10+q, label:y+' Q'+q}; }
+  if(mode==='half'){ var h=m<6?1:2; return {key:y+'-H'+h, ord:y*10+h, label:y+' H'+h}; }
+  if(mode==='year') return {key:''+y, ord:y, label:''+y};
+  return {key:y+'-'+m+'-'+day, ord:y*10000+m*100+day, label:(m+1)+'/'+day};
+}
+function mtbfBuckets(dailyTotals, range, mode){
+  if(mode==='week') return weeklyBuckets(dailyTotals, range);
+  var map=new Map();
+  (dailyTotals||[]).forEach(function(d){ if(!(d.count>0)) return; var pi=mtbfPeriodInfo(d.date, mode);
+    if(!map.has(pi.key)) map.set(pi.key,{ord:pi.ord,label:pi.label,alarms:0,alarmDays:0});
+    var b=map.get(pi.key); b.alarms+=d.count; b.alarmDays++; });
+  return Array.from(map.values()).sort(function(a,b){return a.ord-b.ord;});
+}
 /* ===================== Unit ID → Machine name map (from ESHD FA Machine EMS ID) =====================
    A location code like "J1ESTO21201-101" is matched by its front part only (everything
    before the last "-"), e.g. "J1ESTO21201" → "Mixer Stocker #1". */
@@ -1044,6 +1101,18 @@ function dashboardPanelHTML(){
     </aside>
     <div class="dashmain">
       <div style="margin-bottom:12px;"><button id="defBtn" class="btn secondary sm" style="cursor:pointer;">📖 Status &amp; Cause Definitions</button></div>
+    <div class="card" id="qaCard" style="border-color:#c9dcff;background:#f7faff;">
+      <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <span id="qaTitle">💬 Ask a Question</span>
+        <button class="btn secondary sm" id="qaExport" style="display:none;">⬇ Excel</button>
+      </h3>
+      <p class="muted" id="qaHelp" style="margin-top:-4px;font-size:12px;line-height:1.6;"></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <input id="qaInput" style="flex:1;min-width:260px;margin:0;padding:8px 10px;font-size:13px;border:1px solid var(--border);border-radius:6px;">
+        <button class="btn sm" id="qaRun">Generate report</button>
+      </div>
+      <div id="qaResult" style="margin-top:12px;"></div>
+    </div>
     <div class="card">
       <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
         <span>■ Daily Alarm Count <span class="muted" style="font-size:11.5px;font-weight:400;">— selected period; set range in the 📅 Date filter</span></span>
@@ -1056,7 +1125,7 @@ function dashboardPanelHTML(){
     <div class="card">
       <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
         <span>■ ESHD Alarm Occurrence <span class="muted" id="mtbfNoteEshd" style="font-size:11.5px;font-weight:400;"></span></span>
-        <button class="btn secondary sm" id="expMtbfEshd">⬇ Excel</button>
+        <span style="display:flex;gap:8px;align-items:center;"><label style="font-size:12px;font-weight:600;">Period</label><select id="mtbfPeriod" style="font-size:12px;padding:3px 6px;border:1px solid #cbd5e1;border-radius:6px;"><option value="day">Daily</option><option value="week" selected>Weekly</option><option value="month">Monthly</option><option value="quarter">Quarterly</option><option value="half">Half-year</option><option value="year">Yearly</option></select><button class="btn secondary sm" id="expMtbfEshd">⬇ Excel</button></span>
       </h3>
       <div class="chartbox" style="height:240px;"><canvas id="chartMtbfEshd"></canvas></div>
     </div>
@@ -1078,7 +1147,7 @@ function dashboardPanelHTML(){
     </div>
     <div class="grid2">
       <div class="card"><h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Alarm Occurrence by Cause (selected period)</span><button class="btn secondary sm" id="expCause">⬇ Excel</button></h3>
-        <p class="muted" style="margin-top:-6px;font-size:11.5px;">Click a bar to see where (locations) that cause occurred.</p>
+        <p class="muted" style="margin-top:-6px;font-size:11.5px;">Click a bar to see where (locations) that cause occurred. <b>Ctrl/Cmd-click</b> to toggle multiple causes, <b>Shift-click</b> to select a range — the daily trend below stacks the selected causes in their own colors.</p>
         <div class="chartbox" style="height:280px;"><canvas id="chartCause"></canvas></div>
         <div id="causePct" style="margin-top:8px;line-height:1.9;"></div></div>
       <div class="card"><h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Alarm Occurrence by Status (selected period)</span><button class="btn secondary sm" id="expImprove">⬇ Excel</button></h3><div class="chartbox" style="height:280px;"><canvas id="chartImprove"></canvas></div></div>
@@ -1093,7 +1162,7 @@ function dashboardPanelHTML(){
         </span>
       </h3>
       <div style="margin-bottom:12px;">
-        <div style="font-size:12.5px;font-weight:700;margin-bottom:4px;">Daily trend for this cause (selected period)</div>
+        <div id="causeDailyTitle" style="font-size:12.5px;font-weight:700;margin-bottom:4px;">Daily trend for this cause (selected period)</div>
         <div class="chartbox" style="height:160px;"><canvas id="causeDailyChart"></canvas></div>
       </div>
       <div id="locReportBody"></div>
@@ -1118,7 +1187,7 @@ function dashboardPanelHTML(){
       <div id="top5Table"></div>
     </div>
     <div class="card">
-      <h3>■ Focus Alarms (Auto-recommended)</h3>
+      <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Focus Alarms (Auto-recommended)</span><button class="btn secondary sm" id="expFocus">⬇ Excel</button></h3>
       <p class="muted" style="margin-top:-4px;font-size:12.5px;">Priority is calculated from occurrence frequency in the selected period and current action status (in-progress/monitoring, etc.), with suggested next actions by status.</p>
       <div id="focusList"></div>
     </div>
@@ -1128,6 +1197,7 @@ function dashboardPanelHTML(){
 }
 
 function switchTab(tab){
+  if(tab==='MAP'){ var _mok=false; try{ _mok=sessionStorage.getItem('eshd_map_auth')==='1'; }catch(e){} if(!_mok){ showMapGate(); return; } }
   TABS.forEach(t=>{
     document.getElementById('panel-'+t).classList.toggle('active', t===tab);
   });
@@ -1323,9 +1393,85 @@ let dashDates = [];
 // Slicer filters. Each set holds the EXCLUDED (unchecked) values → empty set = no filter,
 // and new/unseen values default to included. type/cause/aname are row-level; uid/mname
 // are location-level (filter individual occurrences by their Unit ID / machine name).
-const FILTER_FIELDS = ['type','status','cause','aname','mname','uid','port','cim'];
-const FILTER_LABEL = { type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID', port:'Port (Manual/Auto)', cim:'CIM (CIM/MES alarms)' };
-const dashFilters = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(['Manual']), cim:new Set(['CIM']) };
+const FILTER_FIELDS = ['proc','type','status','cause','aname','mname','uid','port','cim'];
+const FILTER_LABEL = { proc:'Process (MIX/Elec/Ass/Formation)', type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID', port:'Port (Manual/Auto)', cim:'CIM (CIM/MES alarms)' };
+const dashFilters = { proc:new Set(), type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(['Manual']), cim:new Set(['CIM']) };
+const PROCESS_LIST = ['MIX','Elec','Ass','Formation'];
+// Authoritative Unit ID -> Process map (from Equipment Master_20260723_Open.xlsx).
+const PROCESS_MAP = {
+  "J1ACNV12101":"Elec","J1ACNV12201":"Elec","J1ACNV13101":"Ass","J1ACNV13201":"Ass",
+  "J1ACNV13301":"Ass","J1ACNV14301":"Ass","J1ACNV14303":"Ass","J1ACNV14305":"Ass",
+  "J1AOHS13101":"Ass","J1AOHS13201":"Ass","J1AOHS13202":"Ass","J1AOHS14301":"Ass",
+  "J1AOHS14302":"Ass","J1ASTO12101":"Elec","J1ASTO12201":"Elec","J1ASTO13101":"Ass",
+  "J1ASTO13102":"Ass","J1ASTO13201":"Ass","J1ASTO13202":"Ass","J1EAGV21101":"MIX",
+  "J1EAGV21201":"MIX","J1ECNV13101":"Elec","J1ECNV13201":"Elec","J1ECNV21101":"MIX",
+  "J1ECNV21201":"MIX","J1EDDA12101":"Elec","J1EDDA12201":"Elec","J1EDDA13101":"Elec",
+  "J1EDDA13201":"Elec","J1EOHS13101":"Elec","J1EOHS13201":"Elec","J1ESTO12101":"Elec",
+  "J1ESTO12201":"Elec","J1ESTO13101":"Elec","J1ESTO13102":"Elec","J1ESTO13201":"Elec",
+  "J1ESTO13202":"Elec","J1ESTO14101":"Elec","J1ESTO14102":"Elec","J1ESTO14201":"Elec",
+  "J1ESTO14202":"Elec","J1ESTO21101":"MIX","J1ESTO21102":"MIX","J1ESTO21201":"MIX",
+  "J1ESTO21202":"MIX","J1ETRS12101":"Elec","J1ETRS12201":"Elec","J1FCNV11301":"Formation",
+  "J1FCNV11302":"Formation","J1FCNV11303":"Formation","J1FCNV11304":"Formation","J1FCNV12301":"Formation",
+  "J1FCNV12302":"Formation","J1FCNV12303":"Formation","J1FCNV12304":"Formation","J1FCNV12305":"Formation",
+  "J1FCNV13301":"Formation","J1FCNV13302":"Formation","J1FSTO11301":"Formation","J1FSTO11302":"Formation",
+  "J1FSTO11303":"Formation","J1FSTO11304":"Formation","J1FSTO11305":"Formation","J1FSTO11306":"Formation",
+  "J1FSTO11307":"Formation","J1FSTO11308":"Formation","J1FSTO11309":"Formation","J1FSTO11310":"Formation",
+  "J1FSTO11311":"Formation","J1FSTO11312":"Formation","J1FSTO11313":"Formation","J1FSTO11314":"Formation",
+  "J1FSTO11315":"Formation","J1FSTO11316":"Formation","J1FSTO11317":"Formation","J1FSTO11318":"Formation",
+  "J1FSTO11319":"Formation","J1FSTO11320":"Formation","J1FSTO12301":"Formation","J1FSTO12302":"Formation",
+  "J1FSTO12303":"Formation","J1FSTO12304":"Formation","J1FSTO12305":"Formation","J1FSTO12306":"Formation",
+  "J1FSTO12307":"Formation","J1FSTO12308":"Formation","J1FSTO12309":"Formation","J1FSTO12310":"Formation",
+  "J1FSTO12311":"Formation","J1FSTO12312":"Formation","J1FSTO12313":"Formation","J1FSTO12314":"Formation",
+  "J1FSTO12315":"Formation","J1FSTO12316":"Formation","J1FSTO12317":"Formation","J1FSTO12318":"Formation",
+  "J1FSTO12319":"Formation","J1FSTO12320":"Formation","J1FSTO12321":"Formation","J1FSTO12322":"Formation",
+  "J1FSTO12323":"Formation","J1FSTO12324":"Formation","J1FSTO12325":"Formation","J1FSTO12326":"Formation",
+  "J1FSTO12327":"Formation","J1FSTO12328":"Formation","J1FSTO12329":"Formation","J1FSTO12330":"Formation",
+  "J1FSTO13301":"Formation","J1FSTO13302":"Formation","J1FSTO13303":"Formation","J1FSTO13304":"Formation",
+  "J1FSTO13305":"Formation","J1FSTO13306":"Formation","J1PCNV13301":"Formation","J1PCNV13302":"Formation",
+  "J1PCNV13303":"Formation","J1PCNV13304":"Formation","J1PCNV13305":"Formation","J1PCNV13306":"Formation",
+  "J1PCNV13307":"Formation","J1PSTO13301":"Formation","J1PSTO13302":"Formation","J1PSTO13303":"Formation",
+  "J1PSTO13304":"Formation","J1PSTO13305":"Formation","J1PSTO13306":"Formation","J1PSTO13307":"Formation",
+  "J1PSTO13308":"Formation","J1PSTO13309":"Formation"
+};
+// Reverse map: machine NAME -> process (via Equipment Master + MACHINE_MAP names),
+// used when a row has no equipment location to read a Unit ID from.
+const NAME_TO_PROCESS = (function(){ const m={}; for(const uid in PROCESS_MAP){ const nm=MACHINE_MAP[uid]; if(nm && !(nm in m)) m[nm]=PROCESS_MAP[uid]; } return m; })();
+// Every Unit ID a row references, taken from its equipment LOCATIONS (e.g.
+// "J1ECNV21201-305" -> "J1ECNV21201"); also considers row.code as a last resort.
+function rowUnitIds(row){
+  const set = new Set();
+  const add = l => { const p = machinePrefix(l); if(p) set.add(String(p).trim().toUpperCase()); };
+  if(row){
+    (row.daily||[]).forEach(e=>(e.locations||[]).forEach(add));
+    if(row.location) String(row.location).split(/\r?\n/).forEach(add);
+    if(row.code) set.add(String(row.code).trim().toUpperCase());
+  }
+  return Array.from(set);
+}
+// Representative Unit ID for a row: the first one that exists in the Equipment Master,
+// else the first location Unit ID. This is the "Unit ID" shown/exported in reports.
+function rowUnitId(row){
+  const ids = rowUnitIds(row);
+  return ids.find(u=>PROCESS_MAP[u]) || ids[0] || '';
+}
+// Map an alarm row to a manufacturing process. Primary source: the Unit IDs found in the
+// alarm's equipment locations, matched against the Equipment Master (Unit ID -> Process).
+// Falls back to the machine name, then a code/name heuristic.
+function rowProcess(row){
+  const ids = rowUnitIds(row);
+  const tally = {};
+  ids.forEach(u=>{ const p = PROCESS_MAP[u]; if(p) tally[p] = (tally[p]||0)+1; });
+  let best=null, bestN=0; for(const p in tally){ if(tally[p]>bestN){ best=p; bestN=tally[p]; } }
+  if(best) return best;
+  const name = String((row && row.machine) || '');
+  if(NAME_TO_PROCESS[name]) return NAME_TO_PROCESS[name];
+  if(/MIX/i.test(name)) return 'MIX';
+  const c = String((row && row.code) || '').trim().toUpperCase().charAt(2);
+  if(c==='E') return 'Elec';
+  if(c==='A') return 'Ass';
+  if(c==='F' || c==='P') return 'Formation';
+  return 'Other';
+}
 // Manual ports: cell suffix 200-249 (e.g. J1ECNV21201-204) OR the explicit mixer-port list below.
 const MIXER_MANUAL_PORTS = new Set(['J1ECNV21201-305','J1ECNV21201-406','J1ECNV21201-303','J1ECNV21201-404','J1ECNV21101-404','J1ECNV21101-303','J1ECNV21101-405','J1ECNV21101-305']);
 // CIM alarms = alarm name contains "CIM" or "MES" (case-insensitive).
@@ -1341,7 +1487,8 @@ function isManualPort(loc){
 function portType(loc){ return isManualPort(loc) ? 'Manual' : 'Auto'; }
 function anyLocationFilter(){ return dashFilters.uid.size>0 || dashFilters.mname.size>0 || dashFilters.port.size>0; }
 function rowExcludedByFilters(row){
-  return dashFilters.type.has(row.machine||'')
+  return dashFilters.proc.has(rowProcess(row))
+      || dashFilters.type.has(row.machine||'')
       || dashFilters.status.has(normalizeStatus(row.status) || '(none)')
       || dashFilters.cause.has(row.cause||'Unknown')
       || dashFilters.aname.has(row.alarmName||'')
@@ -1357,7 +1504,17 @@ let lastStats = null;   // most recent computeRangeStats result (for chart click
 let lastLocReport = null; // { cause, rangeLabel, rows:[[location,count],...] }
 let lastTrend = null;     // { rows:[[period,...vendorTotals]] } for export
 let lastTop = null;       // { header:[], rows:[[]] } for export
+let lastFocus = null;     // { header:[], rows:[[]] } for Focus Alarms export
+let selectedCauses = [];  // multi-select on the "Alarm Occurrence by Cause" chart
+let causeAnchorIdx = -1;  // anchor index for shift-range selection
 let topMode = 'case';     // 'case' = per alarm case, 'alarm' = aggregated by alarm name
+// Convert '#rrggbb' to an rgba() string with the given alpha (for faded/unselected bars).
+function hexToRgba(hex, a){
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex||''));
+  if(!m) return hex;
+  const n = parseInt(m[1],16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
 
 // Vendors (OEM) chosen via the sidebar checkboxes. Starts with all selected.
 const selectedVendors = new Set(VENDORS);
@@ -1550,26 +1707,61 @@ function renderOverviewChart(vendors){
   chartInstances['chartOverview'] = chart;
 }
 
+// Bar colors for the cause chart: full color when unselected-or-selected, faded for
+// non-selected bars once a selection exists.
+function causeBarColors(present){
+  if(!selectedCauses.length) return present.map(causeColor);
+  return present.map(c=> selectedCauses.includes(c) ? causeColor(c) : hexToRgba(causeColor(c), 0.20));
+}
+// After a selection change: recolor the bars and open the combined multi-cause report.
+function updateCauseSelectionUI(present){
+  const ch = chartInstances['chartCause'];
+  if(ch){ ch.data.datasets[0].backgroundColor = causeBarColors(present); ch.update(); }
+  if(selectedCauses.length){ showLocationReport(selectedCauses.slice()); }
+  else { const card = document.getElementById('locationReportCard'); if(card) card.style.display = 'none'; }
+}
 function renderCauseCharts(vendors, stats){
   // Ordered by CAUSE_LIST but only causes that have data (plus any extra causes seen).
   const present = CAUSE_LIST.filter(c => stats.byCause[c]>0)
     .concat(Object.keys(stats.byCause).filter(c=>!CAUSE_LIST.includes(c) && stats.byCause[c]>0));
   const labels = present, vals = present.map(c=>stats.byCause[c]);
-  const colors = present.map(causeColor);
   const total = vals.reduce((a,b)=>a+b,0) || 1;
   const yMax = niceMax(Math.max(0, ...Object.values(stats.byCause)));
-  const clickHandler = (evt, els)=>{ if(els.length){ showLocationReport(labels[els[0].index]); } };
+  // Keep only selected causes that still have data in the current range.
+  selectedCauses = selectedCauses.filter(c=>present.includes(c));
+  window.lastCausePresent = present;
+  if(causeAnchorIdx >= present.length) causeAnchorIdx = -1;
+  // Plain click = single select; Ctrl/Cmd = toggle; Shift = range from the anchor.
+  const clickHandler = (evt, els)=>{
+    if(!els.length) return;
+    const idx = els[0].index, cause = present[idx];
+    const ne = (evt && evt.native) || evt || {};
+    if(ne.shiftKey && causeAnchorIdx >= 0){
+      const a = Math.min(causeAnchorIdx, idx), b = Math.max(causeAnchorIdx, idx);
+      selectedCauses = present.slice(a, b+1);
+    } else if(ne.ctrlKey || ne.metaKey){
+      const p = selectedCauses.indexOf(cause);
+      if(p >= 0) selectedCauses.splice(p, 1); else selectedCauses.push(cause);
+      causeAnchorIdx = idx;
+    } else {
+      selectedCauses = (selectedCauses.length===1 && selectedCauses[0]===cause) ? [] : [cause];
+      causeAnchorIdx = idx;
+    }
+    updateCauseSelectionUI(present);
+  };
 
   destroyChart('chartCause');
   chartInstances['chartCause'] = new Chart(document.getElementById('chartCause'), {
     type:'bar',
-    data:{ labels, datasets:[{ label:'Alarms', data:vals, backgroundColor:colors }] },
+    data:{ labels, datasets:[{ label:'Alarms', data:vals, backgroundColor: causeBarColors(present) }] },
     options:{ responsive:true, maintainAspectRatio:false, onClick:clickHandler,
       layout:{ padding:{ top:16 } },
       plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:(it)=>`${it.parsed.y} alarms (${Math.round(it.parsed.y/total*100)}%)` } } },
       scales:{ y:{ beginAtZero:true, max:yMax, ticks:{ stepSize: yMax/4 } } } },
     plugins:[valueLabelsPlugin]
   });
+  // Re-open / refresh the combined report if there is an active selection.
+  if(selectedCauses.length) updateCauseSelectionUI(present);
 
   // Per-cause percentage breakdown (replaces the old horizontal share chart).
   const pctEl = document.getElementById('causePct');
@@ -1613,20 +1805,26 @@ function renderImproveChart(vendors, stats){
 /* ===================== Location report (click a cause bar) ===================== */
 function showLocationReport(cause){
   if(!lastStats) return;
-  const SEP = lastStats.SEP || '';
-  const locObj = lastStats.locByCause[cause] || {};
-  const unspecTotal = lastStats.unspecTotalByCause?.[cause] || 0;
-  // key = location + SEP + status + SEP + issue.  Row: [unitId, code, name, cause, status, issue, count]
+  // Accept a single cause (string) or several (array) for multi-select.
+  const causes = Array.isArray(cause) ? cause.slice() : [cause];
+  if(!causes.length){ const cc=document.getElementById('locationReportCard'); if(cc) cc.style.display='none'; return; }
+  const SEP = lastStats.SEP || '';
   const splitKey = key => {
     const parts = String(key).split(SEP);
     return { loc: parts[0]||'', status: parts[1]||'', issue: parts[2]||'', alarm: parts[3]||'' };
   };
-  // Include BOTH located rows AND unspecified rows so the table totals the full cause count.
-  const realRows = Object.entries(locObj).map(([key,count])=>{ const {loc,status,issue,alarm}=splitKey(key); return [loc, machinePrefix(loc), machineName(loc), alarm, cause, status, issue, count]; });
-  const unspecRows = Object.entries(lastStats.unspecByCause?.[cause] || {}).map(([key,count])=>{ const {status,issue,alarm}=splitKey(key); return ['(unspecified)','','(no location recorded)', alarm, cause, status, issue, count]; });
-  const rows = realRows.concat(unspecRows).sort((a,b)=>b[7]-a[7]);
-  const note = unspecTotal>0 ? `${unspecTotal} of these occurrence(s) have no recorded equipment location (shown as “(unspecified)”).` : '';
-  // status summary (by occurrence count) for this cause, with percentages
+  // Include BOTH located rows AND unspecified rows so the table totals the full count.
+  let unspecTotal = 0; const rows = [];
+  causes.forEach(cz=>{
+    const locObj = lastStats.locByCause[cz] || {};
+    unspecTotal += lastStats.unspecTotalByCause?.[cz] || 0;
+    Object.entries(locObj).forEach(([key,count])=>{ const {loc,status,issue,alarm}=splitKey(key); rows.push([loc, machinePrefix(loc), machineName(loc), alarm, cz, status, issue, count]); });
+    Object.entries(lastStats.unspecByCause?.[cz] || {}).forEach(([key,count])=>{ const {status,issue,alarm}=splitKey(key); rows.push(['(unspecified)','','(no location recorded)', alarm, cz, status, issue, count]); });
+  });
+  rows.sort((a,b)=>b[7]-a[7]);
+  const causeLabel = causes.join(' + ');
+  const note = unspecTotal>0 ? (unspecTotal + ' of these occurrence(s) have no recorded equipment location (shown as "(unspecified)").') : '';
+  // status summary (by occurrence count) across the selected causes, with percentages
   const statusAgg = {};
   rows.forEach(r=>{ statusAgg[r[5]] = (statusAgg[r[5]]||0) + r[7]; });
   const statusTotal = rows.reduce((a,r)=>a+r[7],0) || 1;
@@ -1635,16 +1833,19 @@ function showLocationReport(cause){
     .sort((a,b)=> (statusOrder.indexOf(a[0])+100*(statusOrder.indexOf(a[0])<0)) - (statusOrder.indexOf(b[0])+100*(statusOrder.indexOf(b[0])<0)))
     .map(([s,n])=>`<span style="display:inline-block;margin-right:10px;"><span class="badge" style="background:${STATUS_COLOR[s]||'#9ca3af'}">${esc(s)}</span> <b>${n}</b> <span class="muted">(${Math.round(n/statusTotal*100)}%)</span></span>`).join('');
   const rangeLabel = (lastStats.start && lastStats.end) ? `${fmtDate(lastStats.start)} ~ ${fmtDate(lastStats.end)}` : 'All';
-  lastLocReport = { cause, rangeLabel, rows };
+  lastLocReport = { cause: causeLabel, causes, rangeLabel, rows };
   const card = document.getElementById('locationReportCard');
-  document.getElementById('locReportTitle').textContent = `■ Location Report — ${cause}  (${rangeLabel})`;
+  document.getElementById('locReportTitle').textContent = `■ Location Report — ${causeLabel}  (${rangeLabel})`;
+  const dailyTitleEl = document.getElementById('causeDailyTitle');
+  if(dailyTitleEl) dailyTitleEl.textContent = causes.length>1 ? `Daily trend by cause — ${causeLabel} (stacked, selected period)` : `Daily trend for ${causeLabel} (selected period)`;
   const body = document.getElementById('locReportBody');
   if(!rows.length){
-    body.innerHTML = '<p class="empty">No location data for this cause in the selected period.</p>';
+    body.innerHTML = '<p class="empty">No location data for the selected cause(s) in this period.</p>';
   } else {
     const total = rows.reduce((a,r)=>a+r[7],0);
     const clip = s => { s = String(s||''); return s.length>160 ? s.slice(0,160)+'…' : s; };
     body.innerHTML = `
+      <div style="margin-bottom:8px;font-size:12.5px;"><b>Selected causes:</b> ${causes.map(c=>`<span class="badge" style="background:${causeColor(c)}">${esc(c)}</span>`).join(' ')} &nbsp; <span class="muted">(${total} total)</span></div>
       <div style="margin-bottom:8px;font-size:12.5px;"><b>Status:</b> ${statusSummary||'-'}</div>
       ${note?`<p class="muted" style="margin-top:0;font-size:12px;">ℹ ${esc(note)}</p>`:''}
       <div class="tablewrap" style="max-height:400px;"><table>
@@ -1652,29 +1853,39 @@ function showLocationReport(cause){
       <tbody>${rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[4])}</td><td>${statusBadge(r[5])}</td><td style="white-space:pre-wrap;" title="${esc(r[6])}">${esc(clip(r[6]))}</td><td class="num">${r[7]}</td><td class="num">${Math.round(r[7]/total*100)}%</td></tr>`).join('')}
       <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="7">Total</td><td class="num">${total}</td><td class="num">100%</td></tr></tbody></table></div>`;
   }
-  renderCauseDailyChart(cause);
+  renderCauseDailyChart(causes);
   card.style.display = '';
   card.scrollIntoView({ behavior:'smooth', block:'nearest' });
 }
-// Daily bar chart of the clicked cause across the selected period.
+// Daily chart of the selected cause(s). Multiple causes are stacked, each in its own color.
 function renderCauseDailyChart(cause){
   destroyChart('causeDailyChart');
   const canvas = document.getElementById('causeDailyChart');
   if(!canvas || !lastStats) return;
-  const cd = (lastStats.causeDailyByCause && lastStats.causeDailyByCause[cause]) || {};
-  // Show every day in the selected range (0 where no alarms), so the trend reads continuously.
+  const causes = Array.isArray(cause) ? cause.slice() : [cause];
+  // Build the list of days to show (continuous across the selected range).
   const days = [];
   if(lastStats.start && lastStats.end){
     for(let d=new Date(lastStats.start); d<=lastStats.end; d.setDate(d.getDate()+1)) days.push(new Date(d));
   } else {
-    Object.values(cd).forEach(o=>days.push(o.date)); days.sort((a,b)=>a-b);
+    const set = new Map();
+    causes.forEach(cz=>Object.values((lastStats.causeDailyByCause&&lastStats.causeDailyByCause[cz])||{}).forEach(o=>set.set(dkey(o.date), o.date)));
+    Array.from(set.values()).sort((a,b)=>a-b).forEach(d=>days.push(d));
   }
   const labels = days.map(fmtDate);
-  const data = days.map(d=> cd[dkey(d)]?.count || 0);
+  const datasets = causes.map(cz=>{
+    const cd = (lastStats.causeDailyByCause && lastStats.causeDailyByCause[cz]) || {};
+    return { label: cz, data: days.map(d=> cd[dkey(d)]?.count || 0), backgroundColor: causeColor(cz), stack: 'causes' };
+  });
+  const multi = causes.length>1;
   chartInstances['causeDailyChart'] = new Chart(canvas, {
     type:'bar',
-    data:{ labels, datasets:[{ label:`${cause} / day`, data, backgroundColor: causeColor(cause) }] },
-    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} }, scales:{ y:{ beginAtZero:true } } }
+    data:{ labels, datasets },
+    options:{ responsive:true, maintainAspectRatio:false,
+      interaction:{ mode:'index', intersect:false },
+      plugins:{ legend:{ display:multi, position:'bottom', labels:{ boxWidth:11, font:{size:10} } },
+        tooltip:{ mode:'index', intersect:false } },
+      scales:{ x:{ stacked:true }, y:{ stacked:true, beginAtZero:true } } }
   });
 }
 function locReportFilenameBase(){
@@ -1760,6 +1971,267 @@ function exportVendorStatusXlsx(){
 function exportTopXlsx(){
   if(!lastTop || !lastTop.rows.length) return;
   exportAoaXlsx([lastTop.header, ...lastTop.rows], 'Top Alarms', `top_alarms_${rangeTag()}.xlsx`);
+}
+function exportFocusXlsx(){
+  if(!lastFocus || !lastFocus.rows.length) return;
+  exportAoaXlsx([lastFocus.header, ...lastFocus.rows], 'Focus Alarms', `focus_alarms_${rangeTag()}.xlsx`,
+    [{wch:6},{wch:10},{wch:12},{wch:22},{wch:32},{wch:8},{wch:16},{wch:12},{wch:12},{wch:48},{wch:40}]);
+}
+/* ===================== Natural-language Q&A report (rule-based, offline) ===================== */
+let lastQaReport = null;   // { header:[], rows:[[]] } for Excel export
+let lastQaQuery = '';      // last query text (re-run on language toggle)
+const QA_PROC_ALIASES = { 'mixing':'MIX','mixer':'MIX','mix':'MIX','믹싱':'MIX','믹서':'MIX',
+  'electrode':'Elec','elec':'Elec','전극':'Elec',
+  'assembly':'Ass','ass':'Ass','조립':'Ass',
+  'formation':'Formation','화성':'Formation','포메이션':'Formation' };
+const QA_STATUS_ALIASES = { 'on-going':'On-Going','ongoing':'On-Going','on going':'On-Going','진행중':'On-Going','진행 중':'On-Going',
+  'monitoring':'Monitoring','모니터링':'Monitoring','관찰':'Monitoring',
+  'completed':'Completed','complete':'Completed','완료':'Completed',
+  'unavoidable':'Unavoidable','불가피':'Unavoidable',
+  'operational':'Operational','운영':'Operational' };
+const QA_STATUS_WEIGHT = { 'On-Going':1.0, 'Monitoring':0.7, 'Operational':0.15, 'Unavoidable':0.25, 'Completed':0.05, '(none)':0.6 };
+const QA_UNRESOLVED = new Set(['On-Going','Monitoring']);
+function qaDataRefDate(){
+  const dates = getAllDataDates(activeVendors());
+  return dates.length ? dates[dates.length-1] : new Date();
+}
+function qaDataYear(){ return qaDataRefDate().getFullYear(); }
+function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+// Distinct Machine Type values in the data (row.machine = CNV/STO/AGV/OHS/DDA/TRS ...).
+function qaTypeValues(){
+  const s = new Set();
+  activeVendors().forEach(v=>(state[v].current.listRows||[]).forEach(row=>{ if(row.machine) s.add(String(row.machine).trim()); }));
+  return s;
+}
+// Parse explicit dates: YYYY-MM-DD / YYYY/MM/DD / M/D / M월 D일 -> {start,end} or null.
+function qaParseDates(text){
+  const tokens = [];
+  const re = /(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})|(\d{1,2})\s*[.\/월]\s*(\d{1,2})\s*일?/g;
+  let m;
+  while((m = re.exec(text))){
+    if(m[1]) tokens.push(new Date(+m[1], +m[2]-1, +m[3]));
+    else tokens.push(new Date(qaDataYear(), +m[4]-1, +m[5]));
+  }
+  if(!tokens.length) return null;
+  tokens.sort((a,b)=>a-b);
+  return { start: tokens[0], end: tokens[tokens.length-1] };
+}
+// Resolve the date window: explicit dates win, else relative words (this/last week, etc.),
+// else the dashboard's currently selected range.
+function qaParseWhen(text){
+  const KR = UI_LANG==='KR';
+  const ex = qaParseDates(text);
+  if(ex) return { start:ex.start, end:ex.end, label:`${fmtDate(ex.start)} ~ ${fmtDate(ex.end)}` };
+  const ref = qaDataRefDate();
+  const wk = d => { const s=weekSunday(d); return { s, e:addDays(s,6) }; };
+  const lab = (s,e,w)=>({ start:s, end:e, label:`${w} (${fmtDate(s)}~${fmtDate(e)})` });
+  const t = ' '+text.toLowerCase()+' ';
+  if(/지난주|저번주|last week/.test(t)){ const w=wk(addDays(ref,-7)); return lab(w.s,w.e, KR?'지난주':'last week'); }
+  if(/이번주|금주|this week|this wk/.test(t)){ const w=wk(ref); return lab(w.s,w.e, KR?'이번주':'this week'); }
+  if(/지난달|전월|저번달|last month/.test(t)){ const s=new Date(ref.getFullYear(),ref.getMonth()-1,1), e=new Date(ref.getFullYear(),ref.getMonth(),0); return lab(s,e, KR?'지난달':'last month'); }
+  if(/이번달|금월|this month/.test(t)){ const s=new Date(ref.getFullYear(),ref.getMonth(),1), e=new Date(ref.getFullYear(),ref.getMonth()+1,0); return lab(s,e, KR?'이번달':'this month'); }
+  if(/어제|yesterday/.test(t)){ const d=addDays(ref,-1); return lab(d,d, KR?'어제':'yesterday'); }
+  if(/오늘|today/.test(t)){ return lab(ref,ref, KR?'오늘':'today'); }
+  return null;
+}
+function qaDetectCauses(text){
+  const s = text, out = new Set();
+  if(/process\s*equipment|공정\s*설비|공정설비/i.test(s)) out.add('Process Equipment');
+  if(/operator|작업자/i.test(s)) out.add('Operator');
+  if(/material|자재|원자재/i.test(s)) out.add('Material');
+  if(/utility|유틸/i.test(s)) out.add('Utility');
+  if(/environment|환경/i.test(s)) out.add('Environment');
+  if(/unknown|미상/i.test(s)) out.add('Unknown');
+  if(/\bIT\b/.test(s) || /it\s*기인/i.test(s)) out.add('IT');
+  const eqStripped = s.replace(/process\s*equipment|공정\s*설비|공정설비/ig,'');
+  if(/equipment|설비|장비/i.test(eqStripped)) out.add('Equipment');
+  return out;
+}
+function qaDetect(text){
+  const low = ' ' + text.toLowerCase() + ' ';
+  const up  = ' ' + text.toUpperCase() + ' ';
+  const vendors = new Set(), procs = new Set(), statuses = new Set(), types = new Set(), uids = new Set(), ports = new Set(), cims = new Set();
+  VENDORS.forEach(v=>{ if(low.includes(v.toLowerCase())) vendors.add(v); });
+  Object.entries(QA_PROC_ALIASES).forEach(([k,val])=>{ if(low.includes(k)) procs.add(val); });
+  Object.entries(QA_STATUS_ALIASES).forEach(([k,val])=>{ if(low.includes(k)) statuses.add(val); });
+  // Machine Type = distinct row.machine values (CNV/STO/AGV/...), matched as whole words.
+  qaTypeValues().forEach(tp=>{ const w=String(tp).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); if(new RegExp('(^|[^A-Z0-9])'+w.toUpperCase()+'([^A-Z0-9]|$)').test(up)) types.add(tp); });
+  // Specific Unit IDs (e.g. J1ESTO14201).
+  let m; const ur=/J1[A-Z]{4}\d{5}/gi; while((m=ur.exec(text))) uids.add(m[0].toUpperCase());
+  // Port (Manual/Auto).
+  if(/manual|수동/i.test(text)) ports.add('Manual');
+  if(/\bauto\b|자동/i.test(text)) ports.add('Auto');
+  // CIM / MES alarms.
+  if(/non-?cim|non-?mes|비\s*cim/i.test(text)) cims.add('Non-CIM');
+  else if(/\bcim\b|\bmes\b/i.test(text)) cims.add('CIM');
+  return { vendors, procs, statuses, types, uids, ports, cims };
+}
+// Is this an advisory question (wants a recommendation / status answer), not just a table?
+function qaIsAdvisory(text){
+  return /중점|추천|봐야|주의|우선|권고|현황|요약|어떤|무엇|어떻게|다음\s*주|다음주|차주|focus|recommend|priority|watch|status|summary|next\s*week|what\s+should|how\s+should/i.test(text);
+}
+function qaChip(txt, color){
+  return `<span class="badge" style="background:${color||'#2563eb'};margin:2px 4px 2px 0;">${esc(txt)}</span>`;
+}
+// Collect matching alarm occurrences for a window + filter set.
+function qaCollect(vendors, range, f){
+  const inRange = d => (!range.start || d>=range.start) && (!range.end || d<=range.end);
+  const items = []; let total = 0; const byCause = {}, byStatus = {};
+  vendors.forEach(v=>{
+    (state[v].current.listRows||[]).forEach(row=>{
+      if(f.procs.size && !f.procs.has(rowProcess(row))) return;
+      if(f.types.size && !f.types.has(String(row.machine||'').trim())) return;
+      if(f.uids.size && !rowUnitIds(row).some(u=>f.uids.has(u))) return;
+      if(f.cims.size && !f.cims.has(cimAlarmType(row))) return;
+      const rc = row.cause || 'Unknown';
+      if(f.causes.size && !f.causes.has(rc)) return;
+      const rs = normalizeStatus(row.status) || '(none)';
+      if(f.statuses.size && !f.statuses.has(rs)) return;
+      let sum = 0;
+      (row.daily||[]).forEach(e=>{
+        if(!inRange(e.date) || !(e.count>0)) return;
+        if(f.ports.size){ sum += (e.locations||[]).filter(l=>f.ports.has(portType(l))).length; }
+        else { sum += e.count; }
+      });
+      if(sum>0){
+        items.push({ vendor:v, proc:rowProcess(row), machine:row.machine||'', code:rowUnitId(row), alarmName:row.alarmName||'', caseNo:row.caseNo||'', cause:rc, status:rs, issue:String(issueText(row)||'').trim(), count:sum });
+        total += sum; byCause[rc]=(byCause[rc]||0)+sum; byStatus[rs]=(byStatus[rs]||0)+sum;
+      }
+    });
+  });
+  items.sort((a,b)=>b.count-a.count);
+  return { items, total, byCause, byStatus };
+}
+// Localize the Q&A card labels for the current language.
+function qaApplyLang(){
+  const KR = UI_LANG==='KR';
+  const t = document.getElementById('qaTitle'); if(t) t.textContent = KR ? '💬 질문형 리포트' : '💬 Ask a Question';
+  const b = document.getElementById('qaRun'); if(b) b.textContent = KR ? '리포트 생성' : 'Generate report';
+  const inp = document.getElementById('qaInput');
+  if(inp) inp.placeholder = KR
+    ? '질문 입력 후 Enter (예: 7/1~7/10 STO AVACO 작업자  또는  AVACO 금주 현황 및 다음주 중점)'
+    : 'Type a question and press Enter (e.g. 7/1~7/10 STO AVACO Operator  or  AVACO this week status and next-week focus)';
+  const h = document.getElementById('qaHelp');
+  if(h) h.innerHTML = KR
+    ? '예: <b>"7/1~7/10 STO AVACO 작업자"</b> 또는 <b>"AVACO 금주 알람 현황 및 다음주 중점"</b> — 날짜범위(이번주·지난주·이번달 포함) · 벤더(AVACO·PRI·EQCELL·CNS) · 공정(MIX·Elec·Ass·Formation) · 설비군(CNV·STO·AGV·OHS·DDA·TRS) · Unit ID · 기인 · 상태 · 포트(Manual/Auto) · CIM 을 자동 인식합니다. "중점/다음주"를 물으면 권고 답변을 제공합니다.'
+    : 'e.g. <b>"7/1~7/10 STO AVACO Operator"</b> or <b>"AVACO this week status and next-week focus"</b> — auto-detects date range (also this week / last week / this month) · vendor (AVACO·PRI·EQCELL·CNS) · process (MIX·Elec·Ass·Formation) · machine type (CNV·STO·AGV·OHS·DDA·TRS) · Unit ID · cause · status · port (Manual/Auto) · CIM. Ask about "focus / next week" for a recommendation.';
+}
+function qaRunQuery(text){
+  const KR = UI_LANG==='KR';
+  const resEl = document.getElementById('qaResult');
+  const exportBtn = document.getElementById('qaExport');
+  if(exportBtn) exportBtn.style.display = 'none';
+  lastQaReport = null; lastQaQuery = text || '';
+  if(!text || !text.trim()){ resEl.innerHTML = `<p class="muted" style="font-size:12.5px;">${KR?'질문을 입력해 주세요.':'Please enter a question.'}</p>`; return; }
+  const allActive = activeVendors();
+  if(!allActive.length){ resEl.innerHTML = `<p class="empty">${KR?'업로드된 알람 데이터가 없습니다. 먼저 벤더 탭에서 파일을 업로드하세요.':'No alarm data uploaded. Upload a file in a vendor tab first.'}</p>`; return; }
+  const det = qaDetect(text);
+  const causes = qaDetectCauses(text);
+  const when = qaParseWhen(text);
+  const range = when || getSelectedRange(allActive);
+  const rangeStr = when ? when.label : (range.start ? `${fmtDate(range.start)} ~ ${fmtDate(range.end)}` : (KR?'전체 기간':'All periods'));
+  const vendors = det.vendors.size ? Array.from(det.vendors).filter(v=>state[v] && state[v].current) : allActive;
+  if(!vendors.length){ resEl.innerHTML = `<p class="empty">${KR?'지정한 벤더의 데이터가 없습니다.':'No data for the specified vendor(s).'}</p>`; return; }
+  const filt = { procs:det.procs, causes, statuses:det.statuses, types:det.types, uids:det.uids, ports:det.ports, cims:det.cims };
+  const { items, total, byCause, byStatus } = qaCollect(vendors, range, filt);
+  // Condition chips.
+  const cl = { proc: KR?'공정:':'process:', type: KR?'설비군:':'type:', cause: KR?'기인:':'cause:', status: KR?'상태:':'status:', port:'port:', cim:'' };
+  const condHtml = [
+    qaChip('📅 '+rangeStr, '#0891b2'),
+    ...vendors.map(v=>qaChip(v, '#334155')),
+    ...Array.from(det.procs).map(p=>qaChip(cl.proc+p, '#7c3aed')),
+    ...Array.from(det.types).map(tp=>qaChip(cl.type+tp, '#0f766e')),
+    ...Array.from(det.uids).map(u=>qaChip(u, '#475569')),
+    ...Array.from(causes).map(c=>qaChip(cl.cause+c, causeColor(c))),
+    ...Array.from(det.statuses).map(s=>qaChip(cl.status+s, STATUS_COLOR[s]||'#6b7280')),
+    ...Array.from(det.ports).map(p=>qaChip(cl.port+p, '#b45309')),
+    ...Array.from(det.cims).map(c=>qaChip(c, '#9333ea'))
+  ].join('');
+  // Export table.
+  lastQaReport = { header: KR
+      ? ['벤더','공정','설비군','Unit ID','알람명','Case','기인','상태','건수','현상/원인']
+      : ['Vendor','Process','Machine Type','Unit ID','Alarm Name','Case','Cause','Status','Count','Observed Issue / Root Cause'],
+    rows: items.map(it=>[it.vendor, it.proc, it.machine, it.code, it.alarmName, it.caseNo, it.cause, it.status, it.count, it.issue]),
+    range: rangeStr };
+  if(!items.length){
+    resEl.innerHTML = `<div style="margin-bottom:8px;">${condHtml}</div><p class="empty">${KR?'해당 조건에 맞는 알람이 없습니다.':'No alarms match these conditions.'}</p>`;
+    return;
+  }
+  const pctPart = KR ? (k,n)=>`${k} ${n}건(${Math.round(n/total*100)}%)` : (k,n)=>`${k} ${n} (${Math.round(n/total*100)}%)`;
+  const topFmt = obj => Object.entries(obj).sort((a,b)=>b[1]-a[1]).map(([k,n])=>pctPart(k,n)).join(', ');
+  const top = items[0];
+  let summary;
+  if(KR){
+    summary = `<b>📊 ${rangeStr}</b> 기간, 대상 <b>${vendors.join(', ')}</b>${det.procs.size?` · 공정 ${Array.from(det.procs).join('/')}`:''}${det.types.size?` · 설비군 ${Array.from(det.types).join('/')}`:''}${causes.size?` · 기인 ${Array.from(causes).join('/')}`:''}${det.statuses.size?` · 상태 ${Array.from(det.statuses).join('/')}`:''} 조건으로 총 <b>${total.toLocaleString('en-US')}건</b>의 알람이 발생했습니다. `
+      + `기인별로는 ${topFmt(byCause)} 순이며, 상태별로는 ${topFmt(byStatus)} 입니다. `
+      + `최다 케이스는 '<b>${esc(top.alarmName||'(무명)')}</b>' (${top.count}건 · ${esc(top.code)} · ${esc(top.machine)} · ${esc(top.vendor)} · ${esc(top.cause)}/${esc(top.status)}) 입니다.`;
+  } else {
+    summary = `<b>📊 ${rangeStr}</b>, target <b>${vendors.join(', ')}</b>${det.procs.size?` · process ${Array.from(det.procs).join('/')}`:''}${det.types.size?` · type ${Array.from(det.types).join('/')}`:''}${causes.size?` · cause ${Array.from(causes).join('/')}`:''}${det.statuses.size?` · status ${Array.from(det.statuses).join('/')}`:''}: a total of <b>${total.toLocaleString('en-US')} alarms</b> occurred. `
+      + `By cause, ${topFmt(byCause)}; by status, ${topFmt(byStatus)}. `
+      + `Top case: '<b>${esc(top.alarmName||'(unnamed)')}</b>' (${top.count} · ${esc(top.code)} · ${esc(top.machine)} · ${esc(top.vendor)} · ${esc(top.cause)}/${esc(top.status)}).`;
+  }
+  // Advisory answer (status + next-period focus recommendation).
+  let answerHtml = '';
+  if(qaIsAdvisory(text)){
+    let incomplete = (byStatus['On-Going']||0) + (byStatus['Monitoring']||0);
+    // Week-over-week vs the immediately preceding equal-length window.
+    let wow = '';
+    if(range.start && range.end){
+      const lenMs = range.end - range.start;
+      const prevEnd = addDays(range.start,-1);
+      const prevStart = new Date(prevEnd.getTime()-lenMs);
+      const prev = qaCollect(vendors, {start:prevStart,end:prevEnd}, filt);
+      if(prev.total>0){
+        const diff = total - prev.total; const pct = Math.round(Math.abs(diff/prev.total*100));
+        wow = KR ? ` 직전 동일기간(${prev.total}건) 대비 ${pct}% ${diff>0?'증가':diff<0?'감소':'동일'}.`
+                 : ` vs the prior equal period (${prev.total}): ${pct}% ${diff>0?'up':diff<0?'down':'flat'}.`;
+      }
+    }
+    // Rank unresolved items by frequency × status weight for next-period focus.
+    const focus = items.map(it=>({ it, score: it.count*(QA_STATUS_WEIGHT[it.status]??0.6) }))
+      .filter(x=> QA_UNRESOLVED.has(x.it.status) || x.score>0)
+      .sort((a,b)=>b.score-a.score).slice(0,5).map(x=>x.it);
+    const focusLines = focus.map((it,i)=> KR
+      ? `${i+1}) ${esc(it.vendor)} ${esc(it.machine)} ${esc(it.code)} · ${esc(it.alarmName||'(무명)')} — ${it.count}건, ${esc(it.cause)}/${esc(it.status)} → ${esc(actionHint(it.status))}`
+      : `${i+1}) ${esc(it.vendor)} ${esc(it.machine)} ${esc(it.code)} · ${esc(it.alarmName||'(unnamed)')} — ${it.count}, ${esc(it.cause)}/${esc(it.status)} → ${esc(actionHint(it.status))}`
+    ).join('<br>');
+    const nextAsked = /다음\s*주|다음주|차주|next\s*week/i.test(text);
+    if(KR){
+      answerHtml = `<div class="card" style="background:#f0f7ff;border-color:#c9dcff;margin-bottom:10px;font-size:12.8px;line-height:1.75;">
+        <div style="font-weight:800;margin-bottom:4px;">💡 답변</div>
+        <div><b>[현황]</b> ${rangeStr} 동안 ${vendors.join(', ')}에서 총 <b>${total.toLocaleString('en-US')}건</b>의 알람이 발생했습니다.${wow} 미완료(진행중+모니터링) <b>${incomplete}건</b>. 기인 상위: ${topFmt(byCause)}.</div>
+        <div style="margin-top:6px;"><b>[${nextAsked?'다음주 ':''}중점 관리 대상]</b><br>${focusLines||'우선 조치가 필요한 항목이 없습니다.'}</div>
+      </div>`;
+    } else {
+      answerHtml = `<div class="card" style="background:#f0f7ff;border-color:#c9dcff;margin-bottom:10px;font-size:12.8px;line-height:1.75;">
+        <div style="font-weight:800;margin-bottom:4px;">💡 Answer</div>
+        <div><b>[Status]</b> During ${rangeStr}, ${vendors.join(', ')} had <b>${total.toLocaleString('en-US')} alarms</b>.${wow} Incomplete (On-Going+Monitoring): <b>${incomplete}</b>. Top causes: ${topFmt(byCause)}.</div>
+        <div style="margin-top:6px;"><b>[${nextAsked?'Next-week ':''}Focus items]</b><br>${focusLines||'No items require priority action.'}</div>
+      </div>`;
+    }
+  }
+  const clip = s => { s=String(s||''); return s.length>120 ? s.slice(0,120)+'…' : s; };
+  const th = KR
+    ? ['No.','벤더','공정','설비군','Unit ID','알람명','Case','기인','상태','건수','현상 / 원인']
+    : ['No.','Vendor','Process','Machine Type','Unit ID','Alarm Name','Case','Cause','Status','Count','Observed Issue / Root Cause'];
+  const rowsHtml = items.slice(0,100).map((it,i)=>`<tr><td>${i+1}</td><td><span class="tag">${esc(it.vendor)}</span></td><td>${esc(it.proc)}</td><td>${esc(it.machine)}</td><td>${esc(it.code)}</td><td>${esc(it.alarmName)}</td><td>${esc(it.caseNo)}</td><td>${esc(it.cause)}</td><td>${statusBadge(it.status)}</td><td class="num">${it.count}</td><td style="white-space:pre-wrap;" title="${esc(it.issue)}">${esc(clip(it.issue))}</td></tr>`).join('');
+  const shown = items.length>100 ? (KR?', 상위 100건 표시':', showing top 100') : '';
+  const totLabel = KR ? `합계 (${items.length}건${shown})` : `Total (${items.length} case${items.length>1?'s':''}${shown})`;
+  resEl.innerHTML = `
+    <div style="margin-bottom:8px;">${condHtml}</div>
+    ${answerHtml}
+    <div class="card" style="background:#fff;margin-bottom:10px;font-size:12.8px;line-height:1.7;">${summary}</div>
+    <div class="tablewrap" style="max-height:440px;"><table>
+      <thead><tr>${th.map((h,i)=>`<th${i===0?' style="width:36px;"':(i===8?' style="width:90px;"':(i===9?' style="width:60px;"':(i===10?' style="min-width:220px;"':'')))}>${esc(h)}</th>`).join('')}</tr></thead>
+      <tbody>${rowsHtml}
+      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="8">${esc(totLabel)}</td><td class="num">${total}</td><td></td></tr></tbody></table></div>`;
+  if(exportBtn) exportBtn.style.display = '';
+}
+function exportQaXlsx(){
+  if(!lastQaReport || !lastQaReport.rows.length) return;
+  const tag = (lastQaReport.range||'').replace(/[^\w\-]+/g,'');
+  exportAoaXlsx([lastQaReport.header, ...lastQaReport.rows], 'Query Report', `qa_report_${tag||'all'}.xlsx`,
+    [{wch:9},{wch:11},{wch:16},{wch:14},{wch:32},{wch:8},{wch:16},{wch:12},{wch:8},{wch:50}]);
 }
 // Sunday of the calendar week containing d (weeks run Sunday→Saturday).
 function weekSunday(d){
@@ -1848,8 +2320,8 @@ function renderMtbfInto(canvasId, noteId, exportSlot, dailyTotals, proc, range){
   destroyChart(canvasId);
   const N0 = openCountForWeek(proc, 0);   // 이번주 open count (latest bucket)
   const note = document.getElementById(noteId);
-  if(note) note.textContent = `— ${N0} CIM (this week) · per-week open counts applied · MTBF = ${MTBF_HOURS_PER_DAY}h × CIM × alarm-days ÷ alarms`;
-  const buckets = weeklyBuckets(dailyTotals, range);
+  if(note) note.textContent = `— ${N0} open units · ${MTBF_PERIOD} · MTBF = ${MTBF_HOURS_PER_DAY}h × open × alarm-days ÷ alarms`;
+  const buckets = mtbfBuckets(dailyTotals, range, MTBF_PERIOD);
   if(!buckets.length || !N0){
     chartInstances[canvasId] = new Chart(document.getElementById(canvasId), {
       type:'bar', data:{labels:[],datasets:[]},
@@ -1858,11 +2330,11 @@ function renderMtbfInto(canvasId, noteId, exportSlot, dailyTotals, proc, range){
     window[exportSlot] = null; return;
   }
   // Each bucket uses the open count for its week slot: latest bucket = slot 0 (이번주), older = 1,2 (>=2 clamped).
-  const nPer = buckets.map((b,i)=> openCountForWeek(proc, buckets.length-1-i));
+  const nPer = buckets.map((b,i)=> MTBF_PERIOD==='week' ? openCountForWeek(proc, buckets.length-1-i) : openCountForWeek(proc, 0));
   const labels = buckets.map(b=>b.label);
   const alarms = buckets.map(b=>b.alarms);
   const mtbf = buckets.map((b,i)=> (b.alarms>0 && b.alarmDays>0 && nPer[i]>0) ? Math.round(MTBF_HOURS_PER_DAY*nPer[i]*b.alarmDays/b.alarms*10)/10 : null);
-  window[exportSlot] = { rows: [['Week','Number of Alarm','CIM (Open)','Alarm Days','MTBF (hr)'],
+  window[exportSlot] = { rows: [['Period','Number of Alarm','Open Units','Alarm Days','MTBF (hr)'],
     ...buckets.map((b,i)=>[b.label, b.alarms, nPer[i], b.alarmDays, mtbf[i]])] };
   chartInstances[canvasId] = new Chart(document.getElementById(canvasId), {
     data:{ labels, datasets:[
@@ -2004,48 +2476,78 @@ function computeFocusList(stats){
 function renderFocusList(stats){
   const el = document.getElementById('focusList');
   const items = computeFocusList(stats);
-  if(!items.length){ el.innerHTML = '<p class="empty">No data to recommend for the selected period.</p>'; return; }
+  if(!items.length){ el.innerHTML = '<p class="empty">No data to recommend for the selected period.</p>'; lastFocus=null; return; }
+  // Store a flat table for Excel export.
+  lastFocus = { header:['Rank','Vendor','Process','Machine','Alarm Name','Case','Cause','Status','Count (period)','Observed Issue / Cause','Suggested Action'],
+    rows: items.map((it,idx)=>[idx+1, it.vendor, rowProcess(it), it.machine, it.alarmName||'', it.caseNo, it.cause, it.status||'', it.periodSum,
+      String(issueText(it)||'').trim(), ACTION_HINT[it.status] || 'Current status check needed']) };
   el.innerHTML = items.map((it,idx)=>`
     <div class="focusItem">
       <div class="top">
         <span><span class="rank">${idx+1}</span><span class="tag">${esc(it.vendor)}</span>${esc(it.machine)} · Case ${esc(it.caseNo)} · ${esc(it.cause)}</span>
         <span>${statusBadge(it.status)} &nbsp; ${it.periodSum} in period</span>
       </div>
-      <div class="desc">${esc((it.observedIssue||it.symptom||it.alarmName||'').toString().slice(0,180))}</div>
-      <div class="hint">👉 ${ACTION_HINT[it.status] || 'Current status check needed'}</div>
+      <div style="font-weight:700;font-size:12.5px;color:#1d4ed8;margin:2px 0 3px;">🔔 ${esc(it.alarmName || '(unnamed alarm)')}</div>
+      <div class="desc">${esc((issueText(it)||it.alarmName||'').toString().slice(0,180))}</div>
+      <div class="hint">👉 ${actionHint(it.status)}</div>
     </div>
   `).join('');
 }
 function renderNarrative(vendors, stats, range){
   const box = document.getElementById('narrativeBox');
+  const KR = UI_LANG==='KR';
   if(!vendors.length){
-    box.innerHTML = '<span class="muted">No alarm lists uploaded. Upload a file in a vendor tab and the period summary and focus recommendations will be generated here automatically.</span>';
+    box.innerHTML = KR
+      ? '<span class="muted">업로드된 알람 목록이 없습니다. 벤더 탭에서 파일을 업로드하면 기간 요약과 중점 권고가 자동으로 생성됩니다.</span>'
+      : '<span class="muted">No alarm lists uploaded. Upload a file in a vendor tab and the period summary and focus recommendations will be generated here automatically.</span>';
     return;
   }
-  const rangeStr = (range.start && range.end) ? `${fmtDate(range.start)}~${fmtDate(range.end)}` : 'All';
+  const rangeStr = (range.start && range.end) ? `${fmtDate(range.start)}~${fmtDate(range.end)}` : (KR?'전체':'All');
   const topCauses = Object.entries(stats.byCause).filter(([,c])=>c>0).sort((a,b)=>b[1]-a[1]).slice(0,2);
   const causeSentence = topCauses.length
-    ? topCauses.map(([c,cnt])=>`${c} (${cnt}, ${stats.total?Math.round(cnt/stats.total*100):0}%)`).join(', ') + ' were the most frequent, in that order.'
-    : 'No cause data was found.';
+    ? (KR
+        ? '기인별로는 ' + topCauses.map(([c,cnt])=>`${c} (${cnt}건, ${stats.total?Math.round(cnt/stats.total*100):0}%)`).join(', ') + ' 순으로 가장 많이 발생했습니다.'
+        : 'By cause, ' + topCauses.map(([c,cnt])=>`${c} (${cnt}, ${stats.total?Math.round(cnt/stats.total*100):0}%)`).join(', ') + ' were the most frequent, in that order.')
+    : (KR?'기인 데이터가 없습니다.':'No cause data was found.');
   const prev = prevPeriodTotal(vendors, range.start, range.end);
-  let deltaSentence = 'No prior period to compare against.';
+  let deltaSentence = KR?'직전 비교 기간이 없습니다.':'No prior period to compare against.';
   if(prev && prev.total>0){
     const diff = stats.total - prev.total; const pct = Math.round(Math.abs(diff/prev.total*100));
-    deltaSentence = diff===0 ? 'This is the same level as the prior period.' : `This is a ${pct}% ${diff>0?'increase':'decrease'} vs the prior equal-length period (${prev.total}).`;
+    if(KR){
+      deltaSentence = diff===0 ? '직전 동일 길이 기간과 같은 수준입니다.' : `직전 동일 길이 기간(${prev.total}건) 대비 ${pct}% ${diff>0?'증가':'감소'}했습니다.`;
+    } else {
+      deltaSentence = diff===0 ? 'This is the same level as the prior period.' : `This is a ${pct}% ${diff>0?'increase':'decrease'} vs the prior equal-length period (${prev.total}).`;
+    }
   }
   const top = stats.rows.slice().sort((a,b)=>b.sum-a.sum)[0];
-  const topCaseSentence = top ? ` The most frequent case was '${esc(top.row.alarmName)}' (${top.sum}) on ${esc(top.row.machine)} at ${esc(top.vendor)}.` : '';
+  const topCaseSentence = top
+    ? (KR
+        ? ` 가장 많이 발생한 케이스는 '${esc(top.row.alarmName)}' (${top.sum}건, ${esc(top.vendor)} · ${esc(top.row.machine)}) 입니다.`
+        : ` The most frequent case was '${esc(top.row.alarmName)}' (${top.sum}) on ${esc(top.row.machine)} at ${esc(top.vendor)}.`)
+    : '';
   let ongoing=0, monitoring=0, completed=0;
   Object.values(stats.statusByCause).forEach(st=>{ ongoing+=st['On-Going']||0; monitoring+=st['Monitoring']||0; completed+=st['Completed']||0; });
   const focus = computeFocusList(stats).slice(0,3);
+  const notSpec = KR?'미지정':'Not specified';
   const focusSentence = focus.length
-    ? focus.map((it,idx)=>`${idx+1}) ${esc(it.vendor)} ${esc(it.machine)} Case ${esc(it.caseNo)} (${esc(it.cause)}) — ${it.periodSum} in period, status ${esc(it.status||'Not specified')} → ${ACTION_HINT[it.status] || 'Current status check needed'}`).join('<br>')
-    : 'No items requiring priority attention were identified.';
-  box.innerHTML = `
-    <div style="margin-bottom:12px;"><b>📝 Period Summary</b> <span class="muted">(${rangeStr} · ${esc(vendors.join(', '))})</span><br>
-    A total of <b>${stats.total.toLocaleString('en-US')} alarms</b> occurred in this period. ${deltaSentence} By cause, ${causeSentence}${topCaseSentence} Action status: On-going ${ongoing}, Monitoring ${monitoring}, Completed ${completed}.</div>
-    <div><b>👉 Focus Recommendations (Action Items)</b><br>${focusSentence}</div>
-  `;
+    ? focus.map((it,idx)=> KR
+        ? `${idx+1}) ${esc(it.vendor)} ${esc(it.machine)} Case ${esc(it.caseNo)} (${esc(it.cause)}) — 기간 내 ${it.periodSum}건, 상태 ${esc(it.status||notSpec)} → ${esc(String(issueText(it)||'').slice(0,140)) || esc(actionHint(it.status))}`
+        : `${idx+1}) ${esc(it.vendor)} ${esc(it.machine)} Case ${esc(it.caseNo)} (${esc(it.cause)}) — ${it.periodSum} in period, status ${esc(it.status||notSpec)} → ${esc(String(issueText(it)||'').slice(0,140)) || esc(actionHint(it.status))}`
+      ).join('<br>')
+    : (KR?'우선 조치가 필요한 항목이 확인되지 않았습니다.':'No items requiring priority attention were identified.');
+  if(KR){
+    box.innerHTML = `
+      <div style="margin-bottom:12px;"><b>📝 기간 요약</b> <span class="muted">(${rangeStr} · ${esc(vendors.join(', '))})</span><br>
+      이 기간 동안 총 <b>${stats.total.toLocaleString('en-US')}건</b>의 알람이 발생했습니다. ${deltaSentence} ${causeSentence}${topCaseSentence} 조치 상태: 진행중 ${ongoing}, 모니터링 ${monitoring}, 완료 ${completed}.</div>
+      <div><b>👉 중점 권고 (조치 항목)</b><br>${focusSentence}</div>
+    `;
+  } else {
+    box.innerHTML = `
+      <div style="margin-bottom:12px;"><b>📝 Period Summary</b> <span class="muted">(${rangeStr} · ${esc(vendors.join(', '))})</span><br>
+      A total of <b>${stats.total.toLocaleString('en-US')} alarms</b> occurred in this period. ${deltaSentence} ${causeSentence}${topCaseSentence} Action status: On-going ${ongoing}, Monitoring ${monitoring}, Completed ${completed}.</div>
+      <div><b>👉 Focus Recommendations (Action Items)</b><br>${focusSentence}</div>
+    `;
+  }
 }
 // Populate the From/To date dropdowns from the available data dates.
 function parseDateInput(v){ if(!v) return null; const p=v.split('-').map(Number); return (p.length===3 && !p.some(isNaN)) ? new Date(p[0], p[1]-1, p[2]) : null; }
@@ -2124,8 +2626,9 @@ function applyDateSelectors(){
 /* ===================== Slicer filters ===================== */
 function escAttr(s){ return esc(String(s)).replace(/"/g,'&quot;'); }
 function collectFilterValues(vendors){
-  const vals = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(), cim:new Set() };
+  const vals = { proc:new Set(), type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(), cim:new Set() };
   vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>{
+    vals.proc.add(rowProcess(row));
     if(row.machine) vals.type.add(String(row.machine));
     vals.status.add(normalizeStatus(row.status) || '(none)');
     vals.cause.add(row.cause||'Unknown');
@@ -2146,7 +2649,8 @@ function renderFilters(vendors){
   if(!vendors.length){ grid.innerHTML = '<span class="muted" style="font-size:12px;">Upload alarm data to enable filters.</span>'; updateFilterSummary(); return; }
   const vals = collectFilterValues(vendors);
   grid.innerHTML = FILTER_FIELDS.map(f=>{
-    const list = Array.from(vals[f]).sort((a,b)=>String(a).localeCompare(String(b)));
+    let list = Array.from(vals[f]).sort((a,b)=>String(a).localeCompare(String(b)));
+    if(f==='proc'){ const ord=PROCESS_LIST.concat(['Other']); list = list.sort((a,b)=>{ const ia=ord.indexOf(a), ib=ord.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib); }); }
     const allChecked = dashFilters[f].size===0;
     return `<div class="filterbox" data-field="${f}">
       <div class="ftitle"><span>${FILTER_LABEL[f]}</span><span class="fcount">${list.length}</span></div>
@@ -2204,7 +2708,7 @@ function renderDashboardBody(){
   renderFocusList(stats);
   // refresh open location report for the new range, if one is showing
   if(lastLocReport && document.getElementById('locationReportCard').style.display!=='none'){
-    showLocationReport(lastLocReport.cause);
+    showLocationReport(lastLocReport.causes || lastLocReport.cause);
   }
 }
 function renderDashboard(){
@@ -2223,6 +2727,17 @@ function renderDashboard(){
 /* ===================== Initialization ===================== */
 document.addEventListener('DOMContentLoaded', ()=>{
   buildTabsAndPanels();
+  if(typeof qaApplyLang==='function') qaApplyLang();
+  (function(){ var en=document.getElementById('langEN'), kr=document.getElementById('langKR');
+    if(en) en.style.background=UI_LANG==='EN'?'#2563eb':'#1e293b';
+    if(kr) kr.style.background=UI_LANG==='KR'?'#2563eb':'#1e293b';
+    if(en) en.addEventListener('click',function(){setLang('EN');});
+    if(kr) kr.addEventListener('click',function(){setLang('KR');});
+    var mb=document.getElementById('mapGateBtn'), mc=document.getElementById('mapGateCancel'), mp=document.getElementById('mapPw');
+    if(mb) mb.addEventListener('click', mapGateSubmit);
+    if(mc) mc.addEventListener('click', function(){ document.getElementById('mapGate').style.display='none'; });
+    if(mp) mp.addEventListener('keydown', function(e){ if(e.key==='Enter') mapGateSubmit(); });
+  })();
 
   VENDORS.forEach(v=>{
     const input = document.getElementById(`file-${v}`);
@@ -2254,6 +2769,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   });
 
   document.getElementById('panel-DASH').addEventListener('change', e=>{
+    if(e.target.id==='mtbfPeriod'){ MTBF_PERIOD=e.target.value; renderDashboard(); return; }
     if(e.target.id==='vendorAll'){
       selectedVendors.clear();
       if(e.target.checked) VENDORS.forEach(v=>selectedVendors.add(v));
@@ -2301,7 +2817,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(e.target.id==='dashRefresh'){ renderDashboard(); }
     if(e.target.id==='rangeReset'){ dashState={start:null,end:null}; renderDashboard(); }
     if(e.target.id==='filterClear'){ FILTER_FIELDS.forEach(f=>dashFilters[f].clear()); renderDashboard(); }
-    if(e.target.id==='locReportClose'){ document.getElementById('locationReportCard').style.display='none'; }
+    if(e.target.id==='locReportClose'){ document.getElementById('locationReportCard').style.display='none'; selectedCauses=[]; causeAnchorIdx=-1; const ch=chartInstances['chartCause']; if(ch && window.lastCausePresent){ ch.data.datasets[0].backgroundColor=causeBarColors(window.lastCausePresent); ch.update(); } }
     if(e.target.id==='locExportCsv'){ exportLocReportCsv(); }
     if(e.target.id==='locExportXlsx'){ exportLocReportXlsx(); }
     if(e.target.id==='expDaily'){ exportDailyXlsx(); }
@@ -2314,12 +2830,20 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(e.target.id==='expVendorCause'){ exportVendorCauseXlsx(); }
     if(e.target.id==='expVendorStatus'){ exportVendorStatusXlsx(); }
     if(e.target.id==='expTop'){ exportTopXlsx(); }
+    if(e.target.id==='expFocus'){ exportFocusXlsx(); }
+    if(e.target.id==='qaRun'){ const inp=document.getElementById('qaInput'); qaRunQuery(inp?inp.value:''); }
+    if(e.target.id==='qaExport'){ exportQaXlsx(); }
     if(e.target.id==='topModeCase' || e.target.id==='topModeAlarm'){
       topMode = e.target.dataset.mode;
       document.getElementById('topModeCase').className = 'btn sm' + (topMode==='case'?'':' secondary');
       document.getElementById('topModeAlarm').className = 'btn sm' + (topMode==='alarm'?'':' secondary');
       if(lastStats) renderTop5(lastStats);
     }
+  });
+
+  // Enter key in the Q&A box runs the query.
+  document.getElementById('panel-DASH').addEventListener('keydown', e=>{
+    if(e.target.id==='qaInput' && e.key==='Enter'){ e.preventDefault(); qaRunQuery(e.target.value); }
   });
 
   // Drag-to-select the analysis period on the daily bar chart.
@@ -2652,7 +3176,7 @@ function showMapDetail(uid){
         </div>
         ${fld('Cause', r.cause)}
         ${fld('Status', normalizeStatus(r.status)||r.status)}
-        ${fld('Observed Issue / Cause', r.observedIssue)}
+        ${fld('Observed Issue / Cause', issueText(r))}
         ${fld('Case No.', r.caseNo)}
         <div class="muted" style="font-size:10.5px;margin-top:4px;">OEM: ${esc(it.vendor)} · Machine: ${esc(r.machine||'')}</div>
       </div>`;
