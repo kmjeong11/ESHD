@@ -119,6 +119,37 @@
 </head>
 <body>
 
+<div id="loginGate" style="position:fixed;inset:0;z-index:100000;background:#0f172a;display:flex;align-items:center;justify-content:center;font-family:'Segoe UI',sans-serif;">
+  <div style="background:#fff;padding:32px 36px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.4);width:320px;">
+    <h2 style="margin:0 0 4px;font-size:20px;color:#1e3a8a;">ESHD Alarm Tool</h2>
+    <p style="margin:0 0 18px;font-size:12.5px;color:#64748b;">Please sign in to continue.</p>
+    <input id="loginId" type="text" placeholder="ID" autocomplete="username" style="width:100%;padding:10px;margin-bottom:10px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box;font-size:14px;">
+    <input id="loginPw" type="password" placeholder="Password" autocomplete="current-password" style="width:100%;padding:10px;margin-bottom:14px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box;font-size:14px;">
+    <button id="loginBtn" style="width:100%;padding:11px;background:#2563eb;color:#fff;border:none;border-radius:6px;font-weight:700;cursor:pointer;font-size:14px;">Sign In</button>
+    <div id="loginErr" style="display:none;margin-top:10px;color:#dc2626;font-size:12.5px;">Invalid ID or password.</div>
+  </div>
+</div>
+<script>
+(function(){
+  var gate=document.getElementById('loginGate');
+  var ok=false; try{ ok=sessionStorage.getItem('eshd_auth')==='1'; }catch(e){}
+  if(ok){ gate.style.display='none'; return; }
+  function tryLogin(){
+    var id=(document.getElementById('loginId').value||'').trim();
+    var pw=document.getElementById('loginPw').value||'';
+    if(id==='eshd' && pw==='eshd'){
+      try{ sessionStorage.setItem('eshd_auth','1'); }catch(e){}
+      gate.style.display='none';
+    } else { document.getElementById('loginErr').style.display='block'; }
+  }
+  document.getElementById('loginBtn').addEventListener('click',tryLogin);
+  ['loginId','loginPw'].forEach(function(idn){
+    document.getElementById(idn).addEventListener('keydown',function(e){ if(e.key==='Enter') tryLogin(); });
+  });
+  document.getElementById('loginId').focus();
+})();
+</script>
+
 <header>
   <h1>ESHD FA Alarm List Management &amp; Report Tool</h1>
   <p>Vendor-based alarm list upload (multi-file history management) · Shared storage (Firebase) auto-sync · Weekly alarm status dashboard &amp; automatic report</p>
@@ -131,6 +162,51 @@
 </main>
 
 <footer>Uploaded files are stored in the Firebase shared storage and are shared with everyone who accesses this link. Please share the link only with internal stakeholders.</footer>
+
+<div id="defModal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(15,23,42,.55);align-items:flex-start;justify-content:center;overflow:auto;padding:40px 16px;box-sizing:border-box;">
+  <div style="background:#fff;max-width:920px;width:100%;border-radius:12px;box-shadow:0 12px 44px rgba(0,0,0,.4);padding:24px 28px;box-sizing:border-box;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <h3 style="margin:0;font-size:17px;">Status &amp; Cause Definitions</h3>
+      <button id="defClose" style="border:none;background:#e5e7eb;border-radius:6px;padding:7px 13px;cursor:pointer;font-weight:700;">✕ Close</button>
+    </div>
+      <div class="grid2">
+        <div>
+          <div style="font-weight:700;margin-bottom:6px;font-size:13px;">Status</div>
+          <div style="font-size:12.5px;line-height:1.6;">
+            <div style="margin-bottom:8px;"><b>Unavoidable</b> — Alarms that cannot be completely eliminated due to operator errors, sensor damage, or equipment failures.</div>
+            <div style="margin-bottom:8px;"><b>Operational</b> — A normal operation alarm that is not caused by a fault. (Ex: EMO Switch On alarm)</div>
+            <div style="margin-bottom:8px;"><b>On-going</b> — The alarm has been identified, and corrective actions and rollout are in progress.</div>
+            <div style="margin-bottom:8px;"><b>Monitoring</b> — Under 10-day monitoring after corrective actions and rollout.</div>
+            <div><b>Completed</b> — No alarm recurrence during the 10-day monitoring period.</div>
+          </div>
+        </div>
+        <div>
+          <div style="font-weight:700;margin-bottom:6px;font-size:13px;">Cause (Root-Cause Category)</div>
+          <div style="font-size:12.5px;line-height:1.6;">
+            <div style="margin-bottom:8px;"><b>Equipment</b> — Alarms caused by a hardware fault or malfunction of the equipment itself: sensors, cylinders, motors, drives, actuators, or other mechanical parts failing, drifting out of spec, or losing alignment.</div>
+            <div style="margin-bottom:8px;"><b>Operator</b> — Alarms triggered by operator actions or manual intervention during production, such as running in manual mode, opening equipment doors, or an object being detected while a worker is inside or working on the line.</div>
+            <div style="margin-bottom:8px;"><b>Material</b> — Alarms caused by the condition of materials or consumables — jigs, pallets, cells, trays, or foils — including defects, damage, misalignment, poor seating/loading, or foreign objects.</div>
+            <div style="margin-bottom:8px;"><b>IT</b> — Alarms related to IT systems, networking, communication, or software: MES/CIM interface errors, RFID / PLC / barcode communication faults, and control-sequence or parameter issues.</div>
+            <div style="margin-bottom:8px;"><b>Process Equipment</b> — Alarms that originate from the upstream or downstream process equipment interfacing with the line (e.g., stockers, aging/formation units, adjacent process tools) rather than from the conveyance equipment itself.</div>
+            <div style="margin-bottom:8px;"><b>Utility</b> — Alarms caused by instability or interruption of utility supply, such as compressed air, electrical power, vacuum, or cooling water.</div>
+            <div style="margin-bottom:8px;"><b>Environment</b> — Alarms caused by environmental or external factors, such as temperature/humidity conditions, static, vibration, or external electrical interference.</div>
+            <div><b>Unknown</b> — The root cause has not been clearly identified yet. These alarms are kept under monitoring so the trend can be observed over time and the true cause confirmed before a category is assigned.</div>
+          </div>
+        </div>
+      </div>
+  </div>
+</div>
+<script>
+(function(){
+  function close(){ var m=document.getElementById('defModal'); if(m) m.style.display='none'; }
+  document.addEventListener('click',function(e){
+    var t=e.target;
+    if(t && t.id==='defBtn'){ var m=document.getElementById('defModal'); if(m) m.style.display='flex'; }
+    else if(t && (t.id==='defClose' || t.id==='defModal')){ close(); }
+  });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') close(); });
+})();
+</script>
 
 <script>
 /* ===================== Basic settings ===================== */
@@ -967,6 +1043,7 @@ function dashboardPanelHTML(){
       </div>
     </aside>
     <div class="dashmain">
+      <div style="margin-bottom:12px;"><button id="defBtn" class="btn secondary sm" style="cursor:pointer;">📖 Status &amp; Cause Definitions</button></div>
     <div class="card">
       <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
         <span>■ Daily Alarm Count <span class="muted" style="font-size:11.5px;font-weight:400;">— selected period; set range in the 📅 Date filter</span></span>
