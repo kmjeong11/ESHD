@@ -1055,7 +1055,7 @@ function dashboardPanelHTML(){
     <div class="kpis" id="kpiRow"></div>
     <div class="card">
       <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-        <span>■ ESHD MTBF (weekly) <span class="muted" id="mtbfNoteEshd" style="font-size:11.5px;font-weight:400;"></span></span>
+        <span>■ ESHD Alarm Occurrence <span class="muted" id="mtbfNoteEshd" style="font-size:11.5px;font-weight:400;"></span></span>
         <button class="btn secondary sm" id="expMtbfEshd">⬇ Excel</button>
       </h3>
       <div class="chartbox" style="height:240px;"><canvas id="chartMtbfEshd"></canvas></div>
@@ -1063,14 +1063,14 @@ function dashboardPanelHTML(){
     <div class="grid2">
       <div class="card">
         <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <span>■ Elec/Ass MTBF <span class="muted" id="mtbfNoteEA" style="font-size:11px;font-weight:400;"></span></span>
+          <span>■ Elec/Ass Alarm Occurrence <span class="muted" id="mtbfNoteEA" style="font-size:11px;font-weight:400;"></span></span>
           <button class="btn secondary sm" id="expMtbfEA">⬇ Excel</button>
         </h3>
         <div class="chartbox" style="height:240px;"><canvas id="chartMtbfEA"></canvas></div>
       </div>
       <div class="card">
         <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-          <span>■ Formation MTBF <span class="muted" id="mtbfNoteFM" style="font-size:11px;font-weight:400;"></span></span>
+          <span>■ Formation Alarm Occurrence <span class="muted" id="mtbfNoteFM" style="font-size:11px;font-weight:400;"></span></span>
           <button class="btn secondary sm" id="expMtbfFM">⬇ Excel</button>
         </h3>
         <div class="chartbox" style="height:240px;"><canvas id="chartMtbfFM"></canvas></div>
@@ -1081,7 +1081,7 @@ function dashboardPanelHTML(){
         <p class="muted" style="margin-top:-6px;font-size:11.5px;">Click a bar to see where (locations) that cause occurred.</p>
         <div class="chartbox" style="height:280px;"><canvas id="chartCause"></canvas></div>
         <div id="causePct" style="margin-top:8px;line-height:1.9;"></div></div>
-      <div class="card"><h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Improvement Status by Cause</span><button class="btn secondary sm" id="expImprove">⬇ Excel</button></h3><div class="chartbox" style="height:280px;"><canvas id="chartImprove"></canvas></div></div>
+      <div class="card"><h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><span>■ Alarm Occurrence by Status (selected period)</span><button class="btn secondary sm" id="expImprove">⬇ Excel</button></h3><div class="chartbox" style="height:280px;"><canvas id="chartImprove"></canvas></div></div>
     </div>
     <div class="card" id="locationReportCard" style="display:none;">
       <h3 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -1325,7 +1325,7 @@ let dashDates = [];
 // are location-level (filter individual occurrences by their Unit ID / machine name).
 const FILTER_FIELDS = ['type','status','cause','aname','mname','uid','port','cim'];
 const FILTER_LABEL = { type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID', port:'Port (Manual/Auto)', cim:'CIM (CIM/MES alarms)' };
-const dashFilters = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(), cim:new Set() };
+const dashFilters = { type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(['Manual']), cim:new Set(['CIM']) };
 // Manual ports: cell suffix 200-249 (e.g. J1ECNV21201-204) OR the explicit mixer-port list below.
 const MIXER_MANUAL_PORTS = new Set(['J1ECNV21201-305','J1ECNV21201-406','J1ECNV21201-303','J1ECNV21201-404','J1ECNV21101-404','J1ECNV21101-303','J1ECNV21101-405','J1ECNV21101-305']);
 // CIM alarms = alarm name contains "CIM" or "MES" (case-insensitive).
