@@ -1395,9 +1395,11 @@ let dashDates = [];
 // Slicer filters. Each set holds the EXCLUDED (unchecked) values → empty set = no filter,
 // and new/unseen values default to included. type/cause/aname are row-level; uid/mname
 // are location-level (filter individual occurrences by their Unit ID / machine name).
-const FILTER_FIELDS = ['proc','type','status','cause','aname','mname','uid','port','cim'];
-const FILTER_LABEL = { proc:'Process (MIX/Elec/Ass/Formation)', type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', mname:'Machine Name', uid:'Unit ID', port:'Port (Manual/Auto)', cim:'CIM (CIM/MES alarms)' };
-const dashFilters = { proc:new Set(), type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(['Manual']), cim:new Set(['CIM']) };
+const FILTER_FIELDS = ['proc','type','status','cause','aname','case','mname','uid','port','cim'];
+const FILTER_LABEL = { proc:'Process (MIX/Elec/Ass/Formation)', type:'Machine Type', status:'Status', cause:'Alarm Reason (Cause)', aname:'Alarm Name', case:'Case No.', mname:'Machine Name', uid:'Unit ID', port:'Port (Manual/Auto)', cim:'CIM (CIM/MES alarms)' };
+const dashFilters = { proc:new Set(), type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), case:new Set(), mname:new Set(), uid:new Set(), port:new Set(['Manual']), cim:new Set(['CIM']) };
+// Normalized Case value for a row (empty -> '(none)').
+function caseVal(row){ const c = (row && row.caseNo); return (c!=null && String(c).trim()!=='') ? String(c).trim() : '(none)'; }
 const PROCESS_LIST = ['MIX','Elec','Ass','Formation'];
 // Authoritative Unit ID -> Process map (from Equipment Master_20260723_Open.xlsx).
 const PROCESS_MAP = {
@@ -1503,6 +1505,7 @@ function rowExcludedByFilters(row){
       || dashFilters.status.has(normalizeStatus(row.status) || '(none)')
       || dashFilters.cause.has(row.cause||'Unknown')
       || dashFilters.aname.has(row.alarmName||'')
+      || dashFilters.case.has(caseVal(row))
       || dashFilters.cim.has(cimAlarmType(row));
 }
 // Effective count + locations for one daily entry after location-level filters.
@@ -2805,13 +2808,14 @@ function applyDateSelectors(){
 /* ===================== Slicer filters ===================== */
 function escAttr(s){ return esc(String(s)).replace(/"/g,'&quot;'); }
 function collectFilterValues(vendors){
-  const vals = { proc:new Set(), type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), mname:new Set(), uid:new Set(), port:new Set(), cim:new Set() };
+  const vals = { proc:new Set(), type:new Set(), status:new Set(), cause:new Set(), aname:new Set(), case:new Set(), mname:new Set(), uid:new Set(), port:new Set(), cim:new Set() };
   vendors.forEach(v=>(state[v].current.listRows||[]).forEach(row=>{
     vals.proc.add(rowProcess(row));
     if(row.machine) vals.type.add(String(row.machine));
     vals.status.add(normalizeStatus(row.status) || '(none)');
     vals.cause.add(row.cause||'Unknown');
     if(row.alarmName) vals.aname.add(String(row.alarmName));
+    vals.case.add(caseVal(row));
     (row.daily||[]).forEach(e=> e.locations.forEach(l=>{ vals.uid.add(machinePrefix(l)); vals.mname.add(machineName(l)); }));
   }));
   vals.port.add('Auto'); vals.port.add('Manual');
@@ -2830,6 +2834,7 @@ function renderFilters(vendors){
   grid.innerHTML = FILTER_FIELDS.map(f=>{
     let list = Array.from(vals[f]).sort((a,b)=>String(a).localeCompare(String(b)));
     if(f==='proc'){ const ord=PROCESS_LIST.concat(['Other']); list = list.sort((a,b)=>{ const ia=ord.indexOf(a), ib=ord.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib); }); }
+    if(f==='case'){ list = list.sort((a,b)=>{ const na=parseFloat(a), nb=parseFloat(b); if(isNaN(na)&&isNaN(nb)) return String(a).localeCompare(String(b)); if(isNaN(na)) return 1; if(isNaN(nb)) return -1; return na-nb; }); }
     const allChecked = dashFilters[f].size===0;
     return `<div class="filterbox" data-field="${f}">
       <div class="ftitle"><span>${FILTER_LABEL[f]}</span><span class="fcount">${list.length}</span></div>
