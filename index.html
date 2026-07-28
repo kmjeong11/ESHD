@@ -1487,10 +1487,19 @@ function isManualPort(loc){
   return Number.isFinite(n) && n>=200 && n<=249;
 }
 function portType(loc){ return isManualPort(loc) ? 'Manual' : 'Auto'; }
-function anyLocationFilter(){ return dashFilters.uid.size>0 || dashFilters.mname.size>0 || dashFilters.port.size>0; }
+// Process is now a LOCATION-level filter (consistent with Machine Name / Unit ID), so a
+// MIX occurrence counts identically whether the user slices by Process=MIX or Machine Name.
+function anyLocationFilter(){ return dashFilters.uid.size>0 || dashFilters.mname.size>0 || dashFilters.port.size>0 || dashFilters.proc.size>0; }
+// Process of a single equipment location, from its Unit ID via the Equipment Master.
+function locProcess(loc){
+  const u = String(machinePrefix(loc)).trim().toUpperCase();
+  if(PROCESS_MAP[u]) return PROCESS_MAP[u];
+  const c = u.charAt(2);
+  if(c==='E') return 'Elec'; if(c==='A') return 'Ass'; if(c==='F'||c==='P') return 'Formation';
+  return 'Other';
+}
 function rowExcludedByFilters(row){
-  return dashFilters.proc.has(rowProcess(row))
-      || dashFilters.type.has(row.machine||'')
+  return dashFilters.type.has(row.machine||'')
       || dashFilters.status.has(normalizeStatus(row.status) || '(none)')
       || dashFilters.cause.has(row.cause||'Unknown')
       || dashFilters.aname.has(row.alarmName||'')
@@ -1499,7 +1508,7 @@ function rowExcludedByFilters(row){
 // Effective count + locations for one daily entry after location-level filters.
 function effEntry(e){
   if(!anyLocationFilter()) return { count:e.count, locs:e.locations.slice() };
-  const locs = e.locations.filter(l => !dashFilters.uid.has(machinePrefix(l)) && !dashFilters.mname.has(machineName(l)) && !dashFilters.port.has(portType(l)));
+  const locs = e.locations.filter(l => !dashFilters.uid.has(machinePrefix(l)) && !dashFilters.mname.has(machineName(l)) && !dashFilters.port.has(portType(l)) && !dashFilters.proc.has(locProcess(l)));
   return { count:locs.length, locs };
 }
 let lastStats = null;   // most recent computeRangeStats result (for chart clicks)
@@ -1983,10 +1992,10 @@ function exportFocusXlsx(){
 /* ===================== Natural-language Q&A report (rule-based, offline) ===================== */
 let lastQaReport = null;   // { header:[], rows:[[]] } for Excel export
 let lastQaQuery = '';      // last query text (re-run on language toggle)
-const QA_PROC_ALIASES = { 'mixing':'MIX','mixer':'MIX','mix':'MIX','믹싱':'MIX','믹서':'MIX',
-  'electrode':'Elec','elec':'Elec','전극':'Elec',
-  'assembly':'Ass','ass':'Ass','조립':'Ass',
-  'formation':'Formation','화성':'Formation','포메이션':'Formation' };
+const QA_PROC_ALIASES = { 'mixing':'MIX','mixer':'MIX','mix':'MIX','믹싱':'MIX','믹서':'MIX','믹스':'MIX','미서':'MIX','미싱':'MIX',
+  'electrode':'Elec','elec':'Elec','전극':'Elec','일렉':'Elec','전극공정':'Elec',
+  'assembly':'Ass','assy':'Ass','ass':'Ass','조립':'Ass','조립공정':'Ass',
+  'formation':'Formation','forming':'Formation','화성':'Formation','포메이션':'Formation','포메':'Formation','활성화':'Formation' };
 const QA_STATUS_ALIASES = { 'on-going':'On-Going','ongoing':'On-Going','on going':'On-Going','진행중':'On-Going','진행 중':'On-Going',
   'monitoring':'Monitoring','모니터링':'Monitoring','관찰':'Monitoring',
   'completed':'Completed','complete':'Completed','완료':'Completed',
@@ -2069,6 +2078,19 @@ function qaDetect(text){
   else if(/\bcim\b|\bmes\b/i.test(text)) cims.add('CIM');
   return { vendors, procs, statuses, types, uids, ports, cims };
 }
+// Words that are commands/filters, not alarm-name keywords. Leftover English tokens
+// after these are used to search the Alarm Name.
+const QA_STOPWORDS = new Set(('조치 조치내용 내용 내역 대응 대책 추천 제안 대안 방안 방향 개선 개선안 새로운 다른 현황 요약 중점 우선 관리 대상 알람 발생 추출 정리 리포트 관련 해줘 알려줘 보여줘 뽑아줘 그리고 기인 상태 공정 설비 벤더 '
+  +'action actions recommend recommendation recommendations alternative alternatives improve improvement improvements suggest suggestion suggestions status focus next week this last month today yesterday and give list extract about please show me the for of report on in is are it its alarm alarms cause causes vendor process type unit id count '
+  +'mix mixer mixing elec electrode assembly assy ass formation forming operator equipment material utility environment unknown cim mes manual auto ongoing going monitoring completed unavoidable operational avaco pri eqcell cns cnv sto agv ohs dda trs').split(/\s+/));
+// Extract leftover English keywords to match against the Alarm Name (e.g. "object position sensor").
+function qaTextTerms(text, det){
+  const toks = (' '+String(text).toLowerCase()+' ').match(/[a-z0-9_]{2,}/g) || [];
+  const uids = new Set(Array.from((det&&det.uids)||[]).map(u=>String(u).toLowerCase()));
+  const out=[], seen=new Set();
+  toks.forEach(raw=>{ let t=raw.replace(/^_+|_+$/g,''); if(t.length<2||/^\d+$/.test(t)||QA_STOPWORDS.has(t)||uids.has(t)||seen.has(t)) return; seen.add(t); out.push(t); });
+  return out;
+}
 // Is this an advisory question (wants a recommendation / status answer), not just a table?
 function qaIsAdvisory(text){
   return /중점|추천|봐야|주의|우선|권고|현황|요약|어떤|무엇|어떻게|다음\s*주|다음주|차주|focus|recommend|priority|watch|status|summary|next\s*week|what\s+should|how\s+should/i.test(text);
@@ -2082,6 +2104,7 @@ function qaCollect(vendors, range, f){
   const items = []; let total = 0; const byCause = {}, byStatus = {};
   vendors.forEach(v=>{
     (state[v].current.listRows||[]).forEach(row=>{
+      if(f.terms && f.terms.length){ const nm=String(row.alarmName||'').toLowerCase(); if(!f.terms.every(t=>nm.includes(t))) return; }
       if(f.procs.size && !f.procs.has(rowProcess(row))) return;
       if(f.types.size && !f.types.has(String(row.machine||'').trim())) return;
       if(f.uids.size && !rowUnitIds(row).some(u=>f.uids.has(u))) return;
@@ -2097,7 +2120,7 @@ function qaCollect(vendors, range, f){
         else { sum += e.count; }
       });
       if(sum>0){
-        items.push({ vendor:v, proc:rowProcess(row), machine:row.machine||'', code:rowUnitId(row), alarmName:row.alarmName||'', caseNo:row.caseNo||'', cause:rc, status:rs, issue:String(issueText(row)||'').trim(), count:sum });
+        items.push({ vendor:v, proc:rowProcess(row), machine:row.machine||'', code:rowUnitId(row), alarmName:row.alarmName||'', caseNo:row.caseNo||'', cause:rc, status:rs, issue:String(issueText(row)||'').trim(), action:String(actionText(row)||'').trim(), count:sum });
         total += sum; byCause[rc]=(byCause[rc]||0)+sum; byStatus[rs]=(byStatus[rs]||0)+sum;
       }
     });
@@ -2116,8 +2139,138 @@ function qaApplyLang(){
     : 'Type a question and press Enter (e.g. 7/1~7/10 STO AVACO Operator  or  AVACO this week status and next-week focus)';
   const h = document.getElementById('qaHelp');
   if(h) h.innerHTML = KR
-    ? '예: <b>"7/1~7/10 STO AVACO 작업자"</b> 또는 <b>"AVACO 금주 알람 현황 및 다음주 중점"</b> — 날짜범위(이번주·지난주·이번달 포함) · 벤더(AVACO·PRI·EQCELL·CNS) · 공정(MIX·Elec·Ass·Formation) · 설비군(CNV·STO·AGV·OHS·DDA·TRS) · Unit ID · 기인 · 상태 · 포트(Manual/Auto) · CIM 을 자동 인식합니다. "중점/다음주"를 물으면 권고 답변을 제공합니다.'
-    : 'e.g. <b>"7/1~7/10 STO AVACO Operator"</b> or <b>"AVACO this week status and next-week focus"</b> — auto-detects date range (also this week / last week / this month) · vendor (AVACO·PRI·EQCELL·CNS) · process (MIX·Elec·Ass·Formation) · machine type (CNV·STO·AGV·OHS·DDA·TRS) · Unit ID · cause · status · port (Manual/Auto) · CIM. Ask about "focus / next week" for a recommendation.';
+    ? '예: <b>"7/1~7/10 STO AVACO 작업자"</b>, <b>"AVACO 금주 현황 및 다음주 중점"</b>, <b>"object position sensor 알람 조치내용"</b>, <b>"…개선 방안 추천해줘"</b> — 날짜(이번주·지난주·이번달) · 벤더 · 공정(MIX·Elec·Ass·Formation, 믹서/mixer 등 동의어 인식) · 설비군(CNV·STO·AGV·OHS·DDA·TRS) · Unit ID · 기인 · 상태 · 포트 · CIM 자동 인식. "조치내용"을 물으면 기록된 조치를, "추천/개선 방안"을 물으면 추가 개선안을 제시합니다.'
+    : 'e.g. <b>"7/1~7/10 STO AVACO Operator"</b>, <b>"AVACO this week status and next-week focus"</b>, <b>"action for the sensor alarm"</b>, <b>"recommend improvements"</b> — auto-detects date (this/last week, this month) · vendor · process (MIX·Elec·Ass·Formation; synonyms like mixer are recognized) · machine type (CNV·STO·AGV·OHS·DDA·TRS) · Unit ID · cause · status · port · CIM. Ask for the "action" to see the written countermeasure, or for "recommendations" to get extra suggestions.';
+}
+// Does the question ask about the written action / countermeasure?
+function qaActionIntent(text){ return /조치|대책|조치내용|조치\s*내역|대응|action|countermeasure|measure taken|what.*done/i.test(text); }
+// Does the question ask for recommendations / alternative countermeasures?
+function qaRecoIntent(text){ return /추천|제안|대안|다른\s*방향|다른\s*방안|새로운\s*방안|개선\s*방안|개선안|방안\s*제시|어떻게\s*개선|recommend|suggest|alternative|other\s*way|improvement|idea/i.test(text); }
+// Keyword-based countermeasure knowledge base. Each suggestion is [EN, KR].
+// Keyword-based countermeasure knowledge base (specific rules first). Each rule has a
+// wide pool so different alarms can surface different, varied suggestions.
+const QA_RECO_RULES = [
+  { kw:/light\s*curtain|라이트\s*커튼|라이트커튼|커튼/i, recos:[
+    ['Re-train operators on standard work; add clear interlock signage','표준작업 재교육 및 인터록 안내 표시 추가'],
+    ['Tune entry-detection delay / muting zone to cut nuisance trips (where safe)','안전 범위 내 진입감지 지연·뮤팅 구간 튜닝으로 오검지 저감'],
+    ['Verify curtain alignment, response time and lens contamination','커튼 정렬·응답시간·렌즈 오염 점검'],
+    ['Relocate/redesign the work approach so hands need not cross the curtain','작업 동선 재설계로 커튼 통과 필요성 제거'],
+    ['Add a physical guide/guard to prevent accidental entry','우발적 진입 방지용 물리 가이드/가드 추가'],
+    ['Log trip time & operator to separate genuine vs nuisance events','트립 시각·작업자 로깅으로 실제/오검지 구분'] ] },
+  { kw:/emergency|\bemo\b|e-?stop|비상|비상정지/i, recos:[
+    ['Standardize the restart procedure and re-train operators','재시작 절차 표준화 및 작업자 재교육'],
+    ['Review guard/interlock layout to remove nuisance triggers','가드·인터록 배치 검토로 오작동 트리거 제거'],
+    ['Clarify reset conditions and add clear signage','리셋 조건 명확화 및 안내 표시 추가'],
+    ['Check EMO wiring/relay chatter and contact bounce','EMO 배선·릴레이 채터링·접점 바운스 점검'],
+    ['Separate maintenance-mode stops from production EMO in the log','정비 모드 정지와 생산 EMO를 로그에서 구분'] ] },
+  { kw:/vehicle|\bagv\b|speed|속도|주행|overspeed|traverse/i, recos:[
+    ['Re-tune AGV speed/PID & accel-decel profile; soften stop zones','AGV 속도/PID·감가속 프로파일 재조정, 정지 구간 완화'],
+    ['Check path magnets/QR & encoder feedback for slip or misread','경로 마그넷/QR·엔코더 슬립·오독 점검'],
+    ['Review bumper/obstacle-detection sensitivity','범퍼/장애물 감지 감도 검토'],
+    ['Inspect floor flatness/joints on the travel path','주행 경로 바닥 평탄도·이음부 점검'],
+    ['Check battery/charge level effect on drive performance','배터리·충전 상태가 주행 성능에 미치는 영향 점검'],
+    ['Balance traffic scheduling to avoid abrupt speed changes','급속도 변화를 줄이는 트래픽 스케줄 균형'] ] },
+  { kw:/align|aligner|cylinder|실린더|정렬|centering/i, recos:[
+    ['Tune cylinder speed/cushion & fwd-back sensor timing','실린더 속도/쿠션·전후진 센서 타이밍 조정'],
+    ['Check aligner jig wear/backlash; recalibrate the alignment sensor','정렬 지그 마모/유격 점검, 정렬 센서 재교정'],
+    ['Add position feedback (sensor/encoder) and re-set the speed controller','위치 피드백(센서/엔코더) 추가, 스피드 컨트롤러 재세팅'],
+    ['Check air pressure/regulator feeding the cylinder','실린더 공급 에어 압력/레귤레이터 점검'],
+    ['Verify product seating before the align step','정렬 스텝 전 제품 안착 확인'] ] },
+  { kw:/crane|stacker|blocking|interfere|충돌|간섭|막힘|차단/i, recos:[
+    ['Re-check traffic / interlock logic and add a wait-avoid sequence','트래픽·인터록 로직 재검토, 대기·회피 시퀀스 추가'],
+    ['Recalibrate position teaching; inspect anti-collision sensors','위치 티칭 재교정, 충돌방지 센서 점검'],
+    ['Balance stocker in/out scheduling to reduce congestion','스토커 입·출고 스케줄 균형으로 혼잡 저감'],
+    ['Add dynamic re-routing when a cell is occupied','셀 점유 시 동적 재경로 배정 추가'],
+    ['Check rail/wheel condition and positioning repeatability','레일·휠 상태 및 위치 반복정도 점검'] ] },
+  { kw:/transfer|unload|loading|\bload\b|fork|extrusion|이송|이재|반입|반출|하역|픽업|pick/i, recos:[
+    ['Recalibrate fork/transfer position teaching','포크/이송 위치 티칭 재교정'],
+    ['Add load-present & seating confirmation before motion','동작 전 로드 유무·안착 확인 추가'],
+    ['Tune transfer speed/torque and verify handshake signals','이송 속도/토크 튜닝, 핸드셰이크 신호 점검'],
+    ['Check gripper/clamp wear and grip force','그리퍼/클램프 마모·파지력 점검'],
+    ['Verify upstream buffer availability before transfer','이송 전 상류 버퍼 가용성 확인'] ] },
+  { kw:/not\s*permitted|permit|reject|route|recipe|입고|불허|storage-?in|store|등록/i, recos:[
+    ['Pre-validate the MES recipe/route before the request (add a pre-check step)','요청 전 MES 레시피/라우트 사전 검증(pre-check 단계 추가)'],
+    ['On reject, retry with a fallback route and log the reason code','불허 시 대체 경로 재시도 및 사유 코드 로깅'],
+    ['Confirm material/equipment registration status in MES','MES 내 자재·설비 등록 상태 확인'],
+    ['Sync the equipment state model with MES to avoid mismatch','설비 상태 모델과 MES 동기화로 불일치 방지'],
+    ['Add an operator-facing message explaining the reject reason','작업자에게 불허 사유를 표시하는 메시지 추가'] ] },
+  { kw:/step|sequence|시퀀스|autostep|handshake|interlock|인터록/i, recos:[
+    ['Review step interlock conditions; add a condition-wait / handshake','스텝 인터록 조건 재검토, 조건 대기·핸드셰이크 추가'],
+    ['Tune the step timeout and add retry-then-alarm','스텝 타임아웃 튜닝, 재시도 후 알람 추가'],
+    ['Map the failing step and log the last-good state','실패 스텝 매핑 및 마지막 정상 상태 로깅'],
+    ['Add a safe recovery/return-to-home sequence','안전 복귀(홈 복귀) 시퀀스 추가'] ] },
+  { kw:/rfid|barcode|바코드|read|리딩|리드|인식|scan|스캔/i, recos:[
+    ['Add N read-retries before NG and log the raw read data','NG 판정 전 N회 재시도, raw 리드 데이터 로깅'],
+    ['Clean/realign antenna & tag; check tag quality and height','안테나·태그 청소/정렬, 태그 품질·높이 점검'],
+    ['Adjust reader power/timing and shield from interference','리더 출력/타이밍 조정, 간섭 차폐'],
+    ['Check tag write quality at the upstream station','상류 스테이션의 태그 기록 품질 점검'],
+    ['Add a manual re-scan station as a fallback','대체 수단으로 수동 재스캔 스테이션 추가'] ] },
+  { kw:/cim|\bmes\b|comm|통신|interface|인터페이스|network|네트워크|protocol|timeout communication/i, recos:[
+    ['Add communication retry + timeout handling; buffer/queue messages','통신 재시도·타임아웃 처리 추가, 메시지 버퍼/큐잉'],
+    ['Verify handshake sequence & heartbeat; synchronize clocks','핸드셰이크 시퀀스·하트비트 점검, 시각 동기화'],
+    ['Escalate to IT for network/switch/firmware review','네트워크·스위치·펌웨어 IT 검토 요청'],
+    ['Add message sequence-number checks to detect drops','메시지 시퀀스 번호 확인으로 유실 감지'],
+    ['Log the full transaction payload for post-mortem','사후 분석용 트랜잭션 페이로드 전체 로깅'] ] },
+  { kw:/pallet|팔레트|jig|지그|tray|트레이|\bcell\b|셀|foil|포일|자재|material/i, recos:[
+    ['Add an incoming pallet/jig inspection and tag defective units','팔레트/지그 입고 점검 및 불량품 태깅'],
+    ['Improve seating/clamping; add a presence & flatness check','안착·클램핑 개선, 존재/평탄도 확인 추가'],
+    ['Set a preventive replacement cycle for worn jigs','마모 지그 예방 교체 주기 설정'],
+    ['Feed defect data back to the supplier/upstream process','불량 데이터를 협력사/상류 공정에 피드백'],
+    ['Add a fixture ID and track defect recurrence by fixture','치구 ID 부여 후 치구별 불량 재발 추적'] ] },
+  { kw:/air|vacuum|진공|에어|pressure|압력|leak|누설|regulator/i, recos:[
+    ['Add a pressure/vacuum sensor with an early-warning threshold','압력/진공 센서 조기경보 threshold 추가'],
+    ['Check the supply-line leak/filter; add a buffer tank','공급라인 누설·필터 점검, 버퍼 탱크 추가'],
+    ['Verify vacuum pad/seal wear and replace on a cycle','진공 패드/실 마모 점검 및 주기 교체'],
+    ['Check regulator setpoint drift over a shift','교대 중 레귤레이터 설정값 드리프트 점검'] ] },
+  { kw:/motor|servo|drive|모터|서보|구동|torque|토크|overload|과부하/i, recos:[
+    ['Review accel/decel & torque limits; add load monitoring','가감속·토크 리밋 검토, 부하 모니터링 추가'],
+    ['Lubrication/alignment PM; check coupling & belt tension','윤활·정렬 PM, 커플링·벨트 장력 점검'],
+    ['Check for mechanical binding / foreign object in the path','기구부 걸림·경로 이물 점검'],
+    ['Review the servo tuning gains for oscillation/overshoot','서보 튜닝 게인(진동/오버슈트) 재검토'] ] },
+  { kw:/timeout|time\s*out|타임아웃|지연|delay|대기|stuck|미도달|not.*reach|도달/i, recos:[
+    ['Tune the step/cycle timeout; use retry-then-alarm logic','스텝/사이클 타임아웃 튜닝, 재시도 후 알람 로직'],
+    ['Identify the upstream/downstream buffer bottleneck','상·하류 버퍼 병목 식별'],
+    ['Check the interlock waiting for a partner signal','파트너 신호 대기 인터록 점검'],
+    ['Instrument each step time to find the slow step','스텝별 소요시간 계측으로 지연 스텝 탐색'] ] },
+  { kw:/sensor|센서|detect|undetect|un-?detect|미감지|감지|position|posi|위치/i, recos:[
+    ['PLC logic: add a detection delay / debounce (e.g. +0.3–0.5s) or a re-scan retry before alarming','PLC 로직: 감지 지연/디바운스(예: +0.3~0.5s) 또는 알람 전 재감지 재시도 추가'],
+    ['Re-tune sensor sensitivity/threshold; verify alignment & mounting jig','센서 감도/threshold 재조정, 정렬·마운트 지그 점검'],
+    ['Add periodic sensor cleaning to the daily checklist','일일 점검표에 센서 주기 청소 추가'],
+    ['Check positioning repeatability / stopper; add a mechanical guide','위치 반복정도·스토퍼 점검, 기계식 가이드 추가'],
+    ['Consider a redundant/backup sensor for critical points','핵심 지점에 예비·이중 센서 검토'],
+    ['Change sensor type/spec (e.g. diffuse→retro-reflective) if unstable','불안정 시 센서 타입/사양 변경(예: 확산형→회귀반사형)'],
+    ['Add signal trend logging to catch drift before failure','고장 전 드리프트 포착용 신호 추세 로깅'] ] },
+];
+const QA_RECO_BY_CAUSE = {
+  Operator:[['Standardize the work and re-train; add poka-yoke / interlock','작업 표준화·재교육, 포카요케/인터록 추가'],['Adjust sensor logic to reduce nuisance trips','오검지 저감을 위한 센서 로직 조정'],['Add a brief in-line guide/checklist at the station','스테이션에 간단한 작업 가이드/체크리스트 배치']],
+  Equipment:[['Strengthen the PM cycle and spare-part readiness','PM 주기 강화 및 예비품 확보'],['Add condition monitoring and root-cause the failing part','상태 모니터링 추가, 고장 부위 근본 조치'],['Track MTBF per unit to target the worst offenders','호기별 MTBF 추적으로 취약 설비 집중 관리']],
+  Material:[['Add an incoming-quality gate and supplier feedback','입고 품질 게이트 및 협력사 피드백'],['Improve handling/storage of jigs & materials','지그·자재 취급/보관 개선'],['Track defect recurrence by lot / fixture ID','로트·치구 ID별 불량 재발 추적']],
+  IT:[['Add comm retry/timeout, logging and alerting','통신 재시도/타임아웃, 로깅·알림 추가'],['Review IT infrastructure (switch/PLC/firmware)','IT 인프라(스위치/PLC/펌웨어) 점검'],['Add sequence/heartbeat checks to detect drops','시퀀스/하트비트 확인으로 유실 감지']],
+  'Process Equipment':[['Coordinate interface timing with the adjacent tool','인접 설비와 인터페이스 타이밍 조율'],['Re-size the buffer/stocker capacity','버퍼/스토커 용량 재산정'],['Add a health signal exchange between tools','설비 간 상태 신호 교환 추가']],
+  Utility:[['Monitor supply stability with early warning; add redundancy','공급 안정성 모니터링·조기경보, 이중화'],['Check filters/lines on a preventive cycle','필터·배관 예방 점검 주기화']],
+  Environment:[['Control temp/humidity/static; isolate vibration & EMI','온습도·정전기 관리, 진동·EMI 격리'],['Add environment logging near the affected unit','해당 설비 인근 환경 로깅 추가']],
+  Unknown:[['Add data logging to capture the context of each occurrence','발생 시 컨텍스트 확보용 데이터 로깅 추가'],['Run a short-term intensive monitoring plan','단기 집중 모니터링 계획 수행'],['Correlate with shift/product/upstream events','교대·제품·상류 이벤트와 상관 분석']]
+};
+// Stable hash so the same alarm always gets the same (but varied vs other alarms) picks.
+function qaHash(s){ let h=2166136261>>>0; s=String(s||''); for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619)>>>0; } return h>>>0; }
+// Pick up to n items from arr starting at a rotating offset (wraps around).
+function qaPick(arr, n, seed){ const out=[]; if(!arr||!arr.length) return out; const start=seed%arr.length; for(let i=0;i<arr.length && out.length<n;i++) out.push(arr[(start+i)%arr.length]); return out; }
+// Suggest varied alternative countermeasures for one item (beyond the written action).
+function qaRecommend(item){
+  const KR = UI_LANG==='KR';
+  const hay = `${item.alarmName} ${item.issue} ${item.action}`;
+  const seed = qaHash((item.alarmName||'') + '|' + (item.code||''));
+  const matched = QA_RECO_RULES.filter(r=>r.kw.test(hay));
+  const picks = [];
+  if(matched.length){
+    picks.push(...qaPick(matched[0].recos, 3, seed));               // primary rule, rotated
+    if(matched[1]) picks.push(...qaPick(matched[1].recos, 1, (seed>>>3)));  // a secondary angle
+  }
+  picks.push(...qaPick(QA_RECO_BY_CAUSE[item.cause]||[], matched.length?1:2, (seed>>>5)));  // cause angle
+  const out=[], seen=new Set();
+  picks.forEach(r=>{ const t=KR?r[1]:r[0]; if(t && !seen.has(t)){ seen.add(t); out.push(t); } });
+  if(!out.length) out.push(KR?'발생 컨텍스트 로깅 후 근본원인 재분석 권장':'Log the occurrence context and re-analyze the root cause');
+  return out.slice(0,5);
 }
 function qaRunQuery(text){
   const KR = UI_LANG==='KR';
@@ -2135,7 +2288,8 @@ function qaRunQuery(text){
   const rangeStr = when ? when.label : (range.start ? `${fmtDate(range.start)} ~ ${fmtDate(range.end)}` : (KR?'전체 기간':'All periods'));
   const vendors = det.vendors.size ? Array.from(det.vendors).filter(v=>state[v] && state[v].current) : allActive;
   if(!vendors.length){ resEl.innerHTML = `<p class="empty">${KR?'지정한 벤더의 데이터가 없습니다.':'No data for the specified vendor(s).'}</p>`; return; }
-  const filt = { procs:det.procs, causes, statuses:det.statuses, types:det.types, uids:det.uids, ports:det.ports, cims:det.cims };
+  const terms = qaTextTerms(text, det);
+  const filt = { procs:det.procs, causes, statuses:det.statuses, types:det.types, uids:det.uids, ports:det.ports, cims:det.cims, terms };
   const { items, total, byCause, byStatus } = qaCollect(vendors, range, filt);
   // Condition chips.
   const cl = { proc: KR?'공정:':'process:', type: KR?'설비군:':'type:', cause: KR?'기인:':'cause:', status: KR?'상태:':'status:', port:'port:', cim:'' };
@@ -2148,13 +2302,14 @@ function qaRunQuery(text){
     ...Array.from(causes).map(c=>qaChip(cl.cause+c, causeColor(c))),
     ...Array.from(det.statuses).map(s=>qaChip(cl.status+s, STATUS_COLOR[s]||'#6b7280')),
     ...Array.from(det.ports).map(p=>qaChip(cl.port+p, '#b45309')),
-    ...Array.from(det.cims).map(c=>qaChip(c, '#9333ea'))
+    ...Array.from(det.cims).map(c=>qaChip(c, '#9333ea')),
+    ...(terms.length?[qaChip((KR?'알람명: ':'name: ')+terms.join(' '), '#0369a1')]:[])
   ].join('');
   // Export table.
   lastQaReport = { header: KR
-      ? ['벤더','공정','설비군','Unit ID','알람명','Case','기인','상태','건수','현상/원인']
-      : ['Vendor','Process','Machine Type','Unit ID','Alarm Name','Case','Cause','Status','Count','Observed Issue / Root Cause'],
-    rows: items.map(it=>[it.vendor, it.proc, it.machine, it.code, it.alarmName, it.caseNo, it.cause, it.status, it.count, it.issue]),
+      ? ['벤더','공정','설비군','Unit ID','알람명','Case','기인','상태','건수','현상/원인','조치내용']
+      : ['Vendor','Process','Machine Type','Unit ID','Alarm Name','Case','Cause','Status','Count','Observed Issue / Root Cause','Action (written)'],
+    rows: items.map(it=>[it.vendor, it.proc, it.machine, it.code, it.alarmName, it.caseNo, it.cause, it.status, it.count, it.issue, it.action]),
     range: rangeStr };
   if(!items.length){
     resEl.innerHTML = `<div style="margin-bottom:8px;">${condHtml}</div><p class="empty">${KR?'해당 조건에 맞는 알람이 없습니다.':'No alarms match these conditions.'}</p>`;
@@ -2213,28 +2368,49 @@ function qaRunQuery(text){
       </div>`;
     }
   }
+  // Alternative-countermeasure recommendations (when asked).
+  let recoHtml = '';
+  if(qaRecoIntent(text)){
+    const picks = items.slice(0,3);
+    const blocks = picks.map(it=>{
+      const recos = qaRecommend(it);
+      const recoLis = recos.map(r=>`<li style="margin-bottom:2px;">${esc(r)}</li>`).join('') || `<li>${KR?'추가 제안 규칙에 해당하는 키워드가 없습니다. 데이터 로깅 후 재검토 권장.':'No keyword rule matched; log data and re-review.'}</li>`;
+      const written = it.action ? esc(it.action) : `<span class="muted">${KR?'(기록된 조치 없음)':'(no written action)'}</span>`;
+      return `<div style="margin-bottom:10px;">
+        <div style="font-weight:700;">• ${esc(it.alarmName||'(unnamed)')} <span class="muted" style="font-weight:400;">(${esc(it.code)} · ${esc(it.cause)}/${esc(it.status)} · ${it.count}${KR?'건':''})</span></div>
+        <div style="margin:2px 0 3px 12px;"><b>${KR?'기록된 조치':'Written action'}:</b> ${written}</div>
+        <div style="margin-left:12px;"><b style="color:#0f766e;">${KR?'추가 제안':'Suggested alternatives'}:</b><ul style="margin:3px 0 0 18px;padding:0;">${recoLis}</ul></div>
+      </div>`;
+    }).join('');
+    recoHtml = `<div class="card" style="background:#f0fdf9;border-color:#a7f3d0;margin-bottom:10px;font-size:12.6px;line-height:1.6;">
+      <div style="font-weight:800;margin-bottom:6px;">🛠 ${KR?'개선 방안 추천 (기록된 조치 외 추가 제안)':'Recommended countermeasures (beyond the written action)'}</div>
+      ${blocks}
+      <div class="muted" style="font-size:11px;margin-top:2px;">${KR?'※ 규칙 기반 일반 제안입니다. 현장 조건에 맞게 검토·적용하세요.':'※ Rule-based general suggestions — review and adapt to on-site conditions.'}</div>
+    </div>`;
+  }
   const clip = s => { s=String(s||''); return s.length>120 ? s.slice(0,120)+'…' : s; };
   const th = KR
-    ? ['No.','벤더','공정','설비군','Unit ID','알람명','Case','기인','상태','건수','현상 / 원인']
-    : ['No.','Vendor','Process','Machine Type','Unit ID','Alarm Name','Case','Cause','Status','Count','Observed Issue / Root Cause'];
-  const rowsHtml = items.slice(0,100).map((it,i)=>`<tr><td>${i+1}</td><td><span class="tag">${esc(it.vendor)}</span></td><td>${esc(it.proc)}</td><td>${esc(it.machine)}</td><td>${esc(it.code)}</td><td>${esc(it.alarmName)}</td><td>${esc(it.caseNo)}</td><td>${esc(it.cause)}</td><td>${statusBadge(it.status)}</td><td class="num">${it.count}</td><td style="white-space:pre-wrap;" title="${esc(it.issue)}">${esc(clip(it.issue))}</td></tr>`).join('');
+    ? ['No.','벤더','공정','설비군','Unit ID','알람명','Case','기인','상태','건수','현상 / 원인','조치내용']
+    : ['No.','Vendor','Process','Machine Type','Unit ID','Alarm Name','Case','Cause','Status','Count','Observed Issue / Root Cause','Action (written)'];
+  const rowsHtml = items.slice(0,100).map((it,i)=>`<tr><td>${i+1}</td><td><span class="tag">${esc(it.vendor)}</span></td><td>${esc(it.proc)}</td><td>${esc(it.machine)}</td><td>${esc(it.code)}</td><td>${esc(it.alarmName)}</td><td>${esc(it.caseNo)}</td><td>${esc(it.cause)}</td><td>${statusBadge(it.status)}</td><td class="num">${it.count}</td><td style="white-space:pre-wrap;" title="${esc(it.issue)}">${esc(clip(it.issue))}</td><td style="white-space:pre-wrap;" title="${esc(it.action)}">${esc(clip(it.action)) || '<span class="muted">-</span>'}</td></tr>`).join('');
   const shown = items.length>100 ? (KR?', 상위 100건 표시':', showing top 100') : '';
   const totLabel = KR ? `합계 (${items.length}건${shown})` : `Total (${items.length} case${items.length>1?'s':''}${shown})`;
   resEl.innerHTML = `
     <div style="margin-bottom:8px;">${condHtml}</div>
     ${answerHtml}
+    ${recoHtml}
     <div class="card" style="background:#fff;margin-bottom:10px;font-size:12.8px;line-height:1.7;">${summary}</div>
     <div class="tablewrap" style="max-height:440px;"><table>
-      <thead><tr>${th.map((h,i)=>`<th${i===0?' style="width:36px;"':(i===8?' style="width:90px;"':(i===9?' style="width:60px;"':(i===10?' style="min-width:220px;"':'')))}>${esc(h)}</th>`).join('')}</tr></thead>
+      <thead><tr>${th.map((h,i)=>`<th${i===0?' style="width:36px;"':(i===8?' style="width:90px;"':(i===9?' style="width:60px;"':(i===10?' style="min-width:200px;"':(i===11?' style="min-width:200px;"':''))))}>${esc(h)}</th>`).join('')}</tr></thead>
       <tbody>${rowsHtml}
-      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="8">${esc(totLabel)}</td><td class="num">${total}</td><td></td></tr></tbody></table></div>`;
+      <tr style="font-weight:800;background:#f8f9fb;"><td></td><td colspan="8">${esc(totLabel)}</td><td class="num">${total}</td><td></td><td></td></tr></tbody></table></div>`;
   if(exportBtn) exportBtn.style.display = '';
 }
 function exportQaXlsx(){
   if(!lastQaReport || !lastQaReport.rows.length) return;
   const tag = (lastQaReport.range||'').replace(/[^\w\-]+/g,'');
   exportAoaXlsx([lastQaReport.header, ...lastQaReport.rows], 'Query Report', `qa_report_${tag||'all'}.xlsx`,
-    [{wch:9},{wch:11},{wch:16},{wch:14},{wch:32},{wch:8},{wch:16},{wch:12},{wch:8},{wch:50}]);
+    [{wch:9},{wch:11},{wch:16},{wch:14},{wch:32},{wch:8},{wch:16},{wch:12},{wch:8},{wch:50},{wch:50}]);
 }
 // Sunday of the calendar week containing d (weeks run Sunday→Saturday).
 function weekSunday(d){
@@ -2717,8 +2893,10 @@ function renderDashboardBody(){
 function renderDashboard(){
   const vendors = activeVendors();
   dashDates = getAllDataDates(vendors);
-  // Clamp any existing selection to the currently available dates.
-  if(dashState.start && (!dashDates.length || dashState.start < dashDates[0] || dashState.end > dashDates[dashDates.length-1])){
+  // Clamp the selection ONLY when it genuinely falls outside the available data.
+  // When no vendor is selected (no dates yet), keep the date selection so toggling
+  // the vendor "All" off/on does not wipe the chosen period.
+  if(dashState.start && dashDates.length && (dashState.start < dashDates[0] || dashState.end > dashDates[dashDates.length-1])){
     dashState = { start:null, end:null };
   }
   renderFilters(vendors);
@@ -3237,7 +3415,7 @@ function mapPanelHTML(){
        <div>
          <div class="muted" style="font-size:11px;font-weight:700;margin-bottom:3px;">🗺️ View</div>
          <div style="display:flex;gap:10px;align-items:center;font-size:12px;">
-           <label><input type="checkbox" id="mapBgToggle" checked> Floor plan</label>
+           <label><input type="checkbox" id="mapBgToggle"> Floor plan</label>
            <label><input type="checkbox" id="mapNumToggle" checked> Numbers</label>
            <label>Opacity <input type="range" id="mapBgOpacity" min="10" max="100" value="85" style="vertical-align:middle;width:80px;"></label>
            <button class="btn secondary sm" id="mapResetView">⤢ Reset</button>
@@ -3263,7 +3441,7 @@ function mapPanelHTML(){
      <div class="card" style="padding:6px;position:relative;">
        <div style="width:100%;height:74vh;background:#0b1020;border-radius:8px;overflow:hidden;">
          <svg id="mapSvg" viewBox="0 0 ${MAP_DATA.w} ${MAP_DATA.h}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;cursor:grab;display:block;">
-           <image id="mapBg" href="${MAP_BG}" x="0" y="0" width="${MAP_DATA.w}" height="${MAP_DATA.h}" opacity="0.85" preserveAspectRatio="none"></image>
+           <image id="mapBg" href="${MAP_BG}" x="0" y="0" width="${MAP_DATA.w}" height="${MAP_DATA.h}" opacity="0.85" preserveAspectRatio="none" style="display:none;"></image>
            <g id="mapCells"></g>
            <g id="mapLabels"></g>
          </svg>
